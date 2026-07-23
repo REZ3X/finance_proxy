@@ -430,6 +430,82 @@ app.post('/api/finance/set-budget', async (req, res) => {
   }
 });
 
+app.post('/api/finance/edit-budget', async (req, res) => {
+  try {
+    const id = unwrap(req.body.id) ||
+               unwrap(req.body.budget_id) ||
+               (req.body.node_output ? (unwrap(req.body.node_output.id) || unwrap(req.body.node_output.budget_id)) : undefined);
+    const newTitle = unwrap(req.body.new_title);
+    const newAmountRaw = unwrap(req.body.new_amount);
+    const newPeriodStart = unwrap(req.body.new_period_start);
+    const newPeriodEnd = unwrap(req.body.new_period_end);
+
+    if (isEmpty(id)) {
+      return res.status(400).json({ success: false, error: 'Missing or invalid budget id' });
+    }
+
+    if (isEmpty(newTitle) && isEmpty(newAmountRaw) && isEmpty(newPeriodStart) && isEmpty(newPeriodEnd)) {
+      return res.status(400).json({ success: false, error: 'No changes provided — nothing to update' });
+    }
+
+    const sheets = getSheetsClient();
+    const rows = await readSheetRows(sheets, BUDGETS_SHEET, BUDGETS_HEADERS);
+    const match = rows.find((r) => r.id === id);
+
+    if (!match) {
+      return res.status(404).json({ success: false, error: 'Budget not found' });
+    }
+
+    const updated = { ...match };
+    const fieldsUpdated = [];
+
+    if (!isEmpty(newTitle)) {
+      updated.title = newTitle;
+      fieldsUpdated.push('title');
+    }
+
+    if (!isEmpty(newAmountRaw)) {
+      const amountNum = parseFloat(newAmountRaw);
+      if (isNaN(amountNum) || amountNum <= 0) {
+        return res.status(400).json({ success: false, error: 'Invalid amount' });
+      }
+      updated.amount = amountNum;
+      fieldsUpdated.push('amount');
+    }
+
+    if (!isEmpty(newPeriodStart)) {
+      updated.period_start = newPeriodStart;
+      fieldsUpdated.push('period_start');
+    }
+
+    if (!isEmpty(newPeriodEnd)) {
+      updated.period_end = newPeriodEnd;
+      fieldsUpdated.push('period_end');
+    }
+
+    updated.updated = nowISO();
+
+    await updateRowByIndex(sheets, BUDGETS_SHEET, BUDGETS_HEADERS, match.rowIndex, updated);
+
+    return res.json({
+      success: true,
+      budget: {
+        id: updated.id,
+        title: updated.title,
+        amount: updated.amount,
+        period_start: updated.period_start,
+        period_end: updated.period_end,
+        created: updated.created,
+        updated: updated.updated,
+      },
+      fields_updated: fieldsUpdated,
+    });
+  } catch (error) {
+    console.error('Edit budget error:', error);
+    return res.status(500).json({ success: false, error: error.message });
+  }
+});
+
 app.post('/api/finance/delete-budget', async (req, res) => {
   try {
     const id = unwrap(req.body.id) || 
