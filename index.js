@@ -207,7 +207,9 @@ app.post('/api/finance/create-transaction', async (req, res) => {
 
 app.post('/api/finance/edit-transaction', async (req, res) => {
   try {
-    const id = unwrap(req.body.id);
+    const id = unwrap(req.body.id) || 
+               unwrap(req.body.tx_transaction_id) || 
+               (req.body.node_output ? (unwrap(req.body.node_output.id) || unwrap(req.body.node_output.tx_transaction_id)) : undefined);
     const newDate = unwrap(req.body.new_date);
     const newType = unwrap(req.body.new_type);
     const newCategory = unwrap(req.body.new_category);
@@ -283,7 +285,9 @@ app.post('/api/finance/edit-transaction', async (req, res) => {
 
 app.post('/api/finance/delete-transaction', async (req, res) => {
   try {
-    const id = unwrap(req.body.id);
+    const id = unwrap(req.body.id) || 
+               unwrap(req.body.tx_transaction_id) || 
+               (req.body.node_output ? (unwrap(req.body.node_output.id) || unwrap(req.body.node_output.tx_transaction_id)) : undefined);
 
     if (isEmpty(id)) {
       return res.status(400).json({ success: false, error: 'Missing or invalid transaction id' });
