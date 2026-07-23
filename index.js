@@ -27,8 +27,8 @@ function unwrap(value) {
   if (typeof value === 'string' && value.trim().startsWith('[')) {
     try {
       const parsed = JSON.parse(value);
-      return Array.isArray(parsed)
-        ? (parsed.length > 0 ? String(parsed[0]) : undefined)
+      return Array.isArray(parsed) 
+        ? (parsed.length > 0 ? String(parsed[0]) : undefined) 
         : value;
     } catch {
       return value;
