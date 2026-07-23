@@ -15,10 +15,15 @@ const TRANSACTIONS_SHEET = 'Transactions';
 const BUDGETS_SHEET = 'Budgets';
 
 const TRANSACTIONS_HEADERS = ['id', 'date', 'type', 'category', 'amount', 'description', 'created', 'updated'];
-const BUDGETS_HEADERS = ['id', 'title', 'amount', 'period_start', 'period_end', 'created', 'updated'];
+const BUDGETS_HEADERS = ['id', 'title', 'linked_category', 'amount', 'period_start', 'period_end', 'created', 'updated'];
+
+const VALID_CATEGORIES = [
+  'Makanan', 'Transport', 'Belanja', 'Hiburan', 'Kesehatan', 'Tagihan', 'Pendidikan',
+  'Gaji', 'Freelance', 'Investasi', 'Hadiah', 'Lainnya'
+];
 
 // ---------------------------------------------------------
-// Helper Functions (carried over from reminder bot)
+// Helper Functions
 // ---------------------------------------------------------
 
 function unwrap(value) {
@@ -72,6 +77,12 @@ function getSheetsClient() {
   return google.sheets({ version: 'v4', auth: getSheetsAuth() });
 }
 
+function resolveCategory(value) {
+  if (isEmpty(value)) return null;
+  const found = VALID_CATEGORIES.find((c) => c.toLowerCase() === String(value).toLowerCase());
+  return found || null;
+}
+
 // ---------------------------------------------------------
 // Generic Sheet Helpers
 // ---------------------------------------------------------
@@ -83,8 +94,6 @@ async function getSheetGid(sheets, sheetName) {
   return sheet.properties.sheetId;
 }
 
-// Reads all data rows (excluding header). rowIndex is the ACTUAL 1-indexed Sheets row
-// (header = row 1, so first data row = 2) — needed later for update/delete targeting.
 async function readSheetRows(sheets, sheetName, headers) {
   const lastCol = String.fromCharCode(64 + headers.length);
   const range = `${sheetName}!A2:${lastCol}`;
@@ -101,7 +110,7 @@ async function readSheetRows(sheets, sheetName, headers) {
       });
       return obj;
     })
-    .filter((obj) => !isEmpty(obj.id)); // skip fully blank trailing rows
+    .filter((obj) => !isEmpty(obj.id));
 }
 
 async function appendRow(sheets, sheetName, headers, rowObject) {
@@ -142,7 +151,7 @@ async function deleteRowByIndex(sheets, sheetName, rowIndex) {
             range: {
               sheetId,
               dimension: 'ROWS',
-              startIndex: rowIndex - 1, // 0-indexed for batchUpdate
+              startIndex: rowIndex - 1,
               endIndex: rowIndex,
             },
           },
@@ -153,7 +162,7 @@ async function deleteRowByIndex(sheets, sheetName, rowIndex) {
 }
 
 // ---------------------------------------------------------
-// Transaction Routes
+// Transaction Routes (unchanged)
 // ---------------------------------------------------------
 
 app.post('/api/finance/create-transaction', async (req, res) => {
@@ -332,7 +341,7 @@ app.post('/api/finance/list-transactions', async (req, res) => {
     if (!isEmpty(categoryFilter)) rows = rows.filter((r) => r.category.toLowerCase() === String(categoryFilter).toLowerCase());
     if (keyword) rows = rows.filter((r) => r.description.toLowerCase().includes(keyword));
 
-    rows.sort((a, b) => (a.date < b.date ? 1 : a.date > b.date ? -1 : 0)); // most recent first
+    rows.sort((a, b) => (a.date < b.date ? 1 : a.date > b.date ? -1 : 0));
 
     rows = rows.slice(0, isNaN(maxResults) ? 50 : maxResults);
 
@@ -361,12 +370,21 @@ app.post('/api/finance/list-transactions', async (req, res) => {
 app.post('/api/finance/set-budget', async (req, res) => {
   try {
     const title = unwrap(req.body.title);
+    const linkedCategoryRaw = unwrap(req.body.linked_category);
     const amountRaw = unwrap(req.body.amount);
     const periodStart = unwrap(req.body.period_start);
     const periodEnd = unwrap(req.body.period_end);
 
     if (isEmpty(title) || isEmpty(amountRaw) || isEmpty(periodStart) || isEmpty(periodEnd)) {
       return res.status(400).json({ success: false, error: 'Missing title, amount, period_start, or period_end' });
+    }
+
+    const resolvedCategory = resolveCategory(linkedCategoryRaw) || resolveCategory(title);
+    if (!resolvedCategory) {
+      return res.status(400).json({
+        success: false,
+        error: `Missing or invalid linked_category. Must be one of: ${VALID_CATEGORIES.join(', ')}`,
+      });
     }
 
     const amountNum = parseFloat(amountRaw);
@@ -377,7 +395,6 @@ app.post('/api/finance/set-budget', async (req, res) => {
     const sheets = getSheetsClient();
     const rows = await readSheetRows(sheets, BUDGETS_SHEET, BUDGETS_HEADERS);
 
-    // Upsert match: same title (case-insensitive) AND overlapping period
     const existing = rows.find((r) => {
       if (r.title.toLowerCase() !== String(title).toLowerCase()) return false;
       return r.period_start <= periodEnd && r.period_end >= periodStart;
@@ -389,6 +406,7 @@ app.post('/api/finance/set-budget', async (req, res) => {
       const updated = {
         ...existing,
         title,
+        linked_category: resolvedCategory,
         amount: amountNum,
         period_start: periodStart,
         period_end: periodEnd,
@@ -402,6 +420,7 @@ app.post('/api/finance/set-budget', async (req, res) => {
         budget: {
           id: updated.id,
           title: updated.title,
+          linked_category: updated.linked_category,
           amount: updated.amount,
           period_start: updated.period_start,
           period_end: updated.period_end,
@@ -415,6 +434,7 @@ app.post('/api/finance/set-budget', async (req, res) => {
     const rowObject = {
       id,
       title,
+      linked_category: resolvedCategory,
       amount: amountNum,
       period_start: periodStart,
       period_end: periodEnd,
@@ -436,6 +456,7 @@ app.post('/api/finance/edit-budget', async (req, res) => {
                unwrap(req.body.budget_id) ||
                (req.body.node_output ? (unwrap(req.body.node_output.id) || unwrap(req.body.node_output.budget_id)) : undefined);
     const newTitle = unwrap(req.body.new_title);
+    const newLinkedCategoryRaw = unwrap(req.body.new_linked_category);
     const newAmountRaw = unwrap(req.body.new_amount);
     const newPeriodStart = unwrap(req.body.new_period_start);
     const newPeriodEnd = unwrap(req.body.new_period_end);
@@ -444,7 +465,7 @@ app.post('/api/finance/edit-budget', async (req, res) => {
       return res.status(400).json({ success: false, error: 'Missing or invalid budget id' });
     }
 
-    if (isEmpty(newTitle) && isEmpty(newAmountRaw) && isEmpty(newPeriodStart) && isEmpty(newPeriodEnd)) {
+    if (isEmpty(newTitle) && isEmpty(newLinkedCategoryRaw) && isEmpty(newAmountRaw) && isEmpty(newPeriodStart) && isEmpty(newPeriodEnd)) {
       return res.status(400).json({ success: false, error: 'No changes provided — nothing to update' });
     }
 
@@ -462,6 +483,18 @@ app.post('/api/finance/edit-budget', async (req, res) => {
     if (!isEmpty(newTitle)) {
       updated.title = newTitle;
       fieldsUpdated.push('title');
+    }
+
+    if (!isEmpty(newLinkedCategoryRaw)) {
+      const resolved = resolveCategory(newLinkedCategoryRaw);
+      if (!resolved) {
+        return res.status(400).json({
+          success: false,
+          error: `Invalid linked_category. Must be one of: ${VALID_CATEGORIES.join(', ')}`,
+        });
+      }
+      updated.linked_category = resolved;
+      fieldsUpdated.push('linked_category');
     }
 
     if (!isEmpty(newAmountRaw)) {
@@ -492,6 +525,7 @@ app.post('/api/finance/edit-budget', async (req, res) => {
       budget: {
         id: updated.id,
         title: updated.title,
+        linked_category: updated.linked_category,
         amount: updated.amount,
         period_start: updated.period_start,
         period_end: updated.period_end,
@@ -550,6 +584,7 @@ app.post('/api/finance/list-budgets', async (req, res) => {
     const budgets = rows.map((r) => ({
       id: r.id,
       title: r.title,
+      linked_category: r.linked_category,
       amount: parseFloat(r.amount) || 0,
       period_start: r.period_start,
       period_end: r.period_end,
@@ -621,7 +656,7 @@ app.post('/api/finance/report', async (req, res) => {
         .filter(
           (t) =>
             t.type === 'expense' &&
-            t.category.toLowerCase() === budget.title.toLowerCase() &&
+            t.category.toLowerCase() === (budget.linked_category || '').toLowerCase() &&
             t.date >= budget.period_start &&
             t.date <= budget.period_end
         )
@@ -635,6 +670,7 @@ app.post('/api/finance/report', async (req, res) => {
         budget: {
           id: budget.id,
           title: budget.title,
+          linked_category: budget.linked_category,
           amount: budgetAmount,
           period_start: budget.period_start,
           period_end: budget.period_end,
