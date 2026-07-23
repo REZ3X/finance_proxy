@@ -432,7 +432,10 @@ app.post('/api/finance/set-budget', async (req, res) => {
 
 app.post('/api/finance/delete-budget', async (req, res) => {
   try {
-    const id = unwrap(req.body.id);
+    const id = unwrap(req.body.id) || 
+               unwrap(req.body.budget_id) || 
+               unwrap(req.body.tx_budget_id) || 
+               (req.body.node_output ? (unwrap(req.body.node_output.id) || unwrap(req.body.node_output.budget_id) || unwrap(req.body.node_output.tx_budget_id)) : undefined);
 
     if (isEmpty(id)) {
       return res.status(400).json({ success: false, error: 'Missing or invalid budget id' });
@@ -493,7 +496,16 @@ app.post('/api/finance/report', async (req, res) => {
   try {
     const body = req.body || {};
     const queryTypeRaw = unwrap(body.query_type);
-    const queryType = isEmpty(queryTypeRaw) ? 'balance' : String(queryTypeRaw);
+
+    const VALID_QUERY_TYPES = ['balance', 'budget_remaining', 'breakdown', 'period_comparison'];
+    const queryType = String(queryTypeRaw || '').trim();
+
+    if (!VALID_QUERY_TYPES.includes(queryType)) {
+      return res.status(400).json({
+        success: false,
+        error: `Missing or invalid query_type. Must be one of: ${VALID_QUERY_TYPES.join(', ')}`,
+      });
+    }
 
     const sheets = getSheetsClient();
 
