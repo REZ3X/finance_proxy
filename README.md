@@ -16,7 +16,7 @@ An Express backend proxy that integrates with **Google Sheets API** to provide C
   - [Chatbot Workflow JSON](#chatbot-workflow-json)
 - [Webchat Bot Example](#webchat-bot-example)
 - [Spreadsheet Example](#spreadsheet-example)
-- [API Reference](#api-reference)
+<!-- - [API Reference](#api-reference) -->
 - [Working Bot Footage](#working-bot-footage)
 
 ---
@@ -181,8 +181,8 @@ You may also configure a custom domain on Vercel if desired.
 
 ![Domain Settings](public/assets/domain.png)
 
-> [!NOTE]
-> Refer to the [API Reference](#api-reference) section for the full list of endpoints, parameters, and response formats.
+<!-- > [!NOTE]
+> Refer to the [API Reference](#api-reference) section for the full list of endpoints, parameters, and response formats. -->
 
 
 ---
@@ -243,7 +243,7 @@ You can see the live example of the sheets:
 
 ---
 
-## API Reference
+<!-- ## API Reference
 
 All requests to the backend proxy should be sent with the `Content-Type: application/json` header.
 
@@ -784,9 +784,9 @@ Calculates whether a planned expense/income is affordable/feasible before it is 
     "projected_balance": -50000,
     "enough": false
   }
-  ```
+  ``` -->
 
----
+<!-- --- -->
 
 ## Working Bot Footage
 
