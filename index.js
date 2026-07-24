@@ -162,7 +162,31 @@ async function deleteRowByIndex(sheets, sheetName, rowIndex) {
 }
 
 // ---------------------------------------------------------
-// Transaction Routes (unchanged)
+// Balance / Budget Guard Helpers
+// ---------------------------------------------------------
+
+async function computeCurrentBalance(sheets) {
+  const rows = await readSheetRows(sheets, TRANSACTIONS_SHEET, TRANSACTIONS_HEADERS);
+  const income = rows.filter((r) => r.type === 'income').reduce((sum, r) => sum + (parseFloat(r.amount) || 0), 0);
+  const expense = rows.filter((r) => r.type === 'expense').reduce((sum, r) => sum + (parseFloat(r.amount) || 0), 0);
+  return { income, expense, balance: income - expense, allTransactionRows: rows };
+}
+
+function findActiveBudgetForCategory(budgetRows, category, transactionDate) {
+  const candidates = budgetRows.filter(
+    (b) =>
+      !isEmpty(b.linked_category) &&
+      b.linked_category.toLowerCase() === String(category).toLowerCase() &&
+      b.period_start <= transactionDate &&
+      b.period_end >= transactionDate
+  );
+  if (candidates.length === 0) return null;
+  candidates.sort((a, b) => new Date(b.created).getTime() - new Date(a.created).getTime());
+  return candidates[0];
+}
+
+// ---------------------------------------------------------
+// Transaction Routes
 // ---------------------------------------------------------
 
 app.post('/api/finance/create-transaction', async (req, res) => {
@@ -174,23 +198,89 @@ app.post('/api/finance/create-transaction', async (req, res) => {
     const cleanDescription = unwrap(req.body.description);
 
     if (isEmpty(cleanDate) || isEmpty(cleanType) || isEmpty(cleanAmountRaw)) {
-      return res.status(400).json({ success: false, error: 'Missing date, type, or amount' });
+      return res.status(400).json({ success: false, error_code: 'missing_fields', error: 'Missing date, type, or amount' });
     }
 
     const typeLower = String(cleanType).toLowerCase();
     if (!['income', 'expense'].includes(typeLower)) {
-      return res.status(400).json({ success: false, error: 'Invalid type — must be "income" or "expense"' });
+      return res.status(400).json({ success: false, error_code: 'invalid_type', error: 'Invalid type — must be "income" or "expense"' });
     }
 
     const amountNum = parseFloat(cleanAmountRaw);
     if (isNaN(amountNum) || amountNum <= 0) {
-      return res.status(400).json({ success: false, error: 'Invalid amount' });
+      return res.status(400).json({ success: false, error_code: 'invalid_amount', error: 'Invalid amount' });
     }
 
     const finalCategory = isEmpty(cleanCategory) ? 'Lainnya' : cleanCategory;
     const finalDescription = isEmpty(cleanDescription) ? '' : cleanDescription;
 
     const sheets = getSheetsClient();
+
+    // ---------------------------------------------------------
+    // GUARD 1 — Balance check (only applies to expenses)
+    // Prevents logging an expense that would push the all-time balance negative.
+    // ---------------------------------------------------------
+    let currentBalanceInfo = null;
+    if (typeLower === 'expense') {
+      currentBalanceInfo = await computeCurrentBalance(sheets);
+      const projectedBalance = currentBalanceInfo.balance - amountNum;
+
+      if (projectedBalance < 0) {
+        return res.status(409).json({
+          success: false,
+          error_code: 'insufficient_balance',
+          error: 'This expense would exceed your available balance',
+          current_balance: currentBalanceInfo.balance,
+          attempted_amount: amountNum,
+          projected_balance: projectedBalance,
+        });
+      }
+    }
+
+    // ---------------------------------------------------------
+    // GUARD 2 — Budget check (only applies to expenses matching an active, category-linked budget)
+    // General/unlinked budgets are NOT checked here — only exact category matches.
+    // ---------------------------------------------------------
+    let matchedBudget = null;
+    let budgetSpentBefore = 0;
+    if (typeLower === 'expense') {
+      const budgetRows = await readSheetRows(sheets, BUDGETS_SHEET, BUDGETS_HEADERS);
+      matchedBudget = findActiveBudgetForCategory(budgetRows, finalCategory, cleanDate);
+
+      if (matchedBudget) {
+        const txRows = currentBalanceInfo
+          ? currentBalanceInfo.allTransactionRows
+          : await readSheetRows(sheets, TRANSACTIONS_SHEET, TRANSACTIONS_HEADERS);
+
+        budgetSpentBefore = txRows
+          .filter(
+            (t) =>
+              t.type === 'expense' &&
+              t.category.toLowerCase() === matchedBudget.linked_category.toLowerCase() &&
+              t.date >= matchedBudget.period_start &&
+              t.date <= matchedBudget.period_end
+          )
+          .reduce((sum, t) => sum + (parseFloat(t.amount) || 0), 0);
+
+        const budgetAmount = parseFloat(matchedBudget.amount) || 0;
+        const projectedSpent = budgetSpentBefore + amountNum;
+
+        if (projectedSpent > budgetAmount) {
+          return res.status(409).json({
+            success: false,
+            error_code: 'budget_exceeded',
+            error: `This expense would exceed your "${matchedBudget.title}" budget`,
+            budget_title: matchedBudget.title,
+            budget_linked_category: matchedBudget.linked_category,
+            budget_amount: budgetAmount,
+            spent_before: budgetSpentBefore,
+            attempted_amount: amountNum,
+            would_exceed_by: projectedSpent - budgetAmount,
+          });
+        }
+      }
+    }
+
     const id = generateId();
     const timestamp = nowISO();
 
@@ -207,10 +297,30 @@ app.post('/api/finance/create-transaction', async (req, res) => {
 
     await appendRow(sheets, TRANSACTIONS_SHEET, TRANSACTIONS_HEADERS, rowObject);
 
-    return res.json({ success: true, transaction: rowObject });
+    const response = {
+      success: true,
+      transaction: rowObject,
+    };
+
+    if (typeLower === 'expense') {
+      response.balance_after = currentBalanceInfo ? currentBalanceInfo.balance - amountNum : undefined;
+
+      if (matchedBudget) {
+        const budgetAmount = parseFloat(matchedBudget.amount) || 0;
+        response.budget_context = {
+          budget_title: matchedBudget.title,
+          budget_linked_category: matchedBudget.linked_category,
+          budget_amount: budgetAmount,
+          spent_after: budgetSpentBefore + amountNum,
+          remaining_after: budgetAmount - (budgetSpentBefore + amountNum),
+        };
+      }
+    }
+
+    return res.json(response);
   } catch (error) {
     console.error('Create transaction error:', error);
-    return res.status(500).json({ success: false, error: error.message });
+    return res.status(500).json({ success: false, error_code: 'server_error', error: error.message });
   }
 });
 
@@ -226,11 +336,11 @@ app.post('/api/finance/edit-transaction', async (req, res) => {
     const newDescription = unwrap(req.body.new_description);
 
     if (isEmpty(id)) {
-      return res.status(400).json({ success: false, error: 'Missing or invalid transaction id' });
+      return res.status(400).json({ success: false, error_code: 'missing_id', error: 'Missing or invalid transaction id' });
     }
 
     if (isEmpty(newDate) && isEmpty(newType) && isEmpty(newCategory) && isEmpty(newAmountRaw) && isEmpty(newDescription)) {
-      return res.status(400).json({ success: false, error: 'No changes provided — nothing to update' });
+      return res.status(400).json({ success: false, error_code: 'no_changes', error: 'No changes provided — nothing to update' });
     }
 
     const sheets = getSheetsClient();
@@ -238,34 +348,99 @@ app.post('/api/finance/edit-transaction', async (req, res) => {
     const match = rows.find((r) => r.id === id);
 
     if (!match) {
-      return res.status(404).json({ success: false, error: 'Transaction not found' });
+      return res.status(404).json({ success: false, error_code: 'not_found', error: 'Transaction not found' });
+    }
+
+    let resolvedNewType = match.type;
+    if (!isEmpty(newType)) {
+      const t = String(newType).toLowerCase();
+      if (!['income', 'expense'].includes(t)) {
+        return res.status(400).json({ success: false, error_code: 'invalid_type', error: 'Invalid type — must be "income" or "expense"' });
+      }
+      resolvedNewType = t;
+    }
+
+    let resolvedNewAmount = parseFloat(match.amount) || 0;
+    if (!isEmpty(newAmountRaw)) {
+      const amountNum = parseFloat(newAmountRaw);
+      if (isNaN(amountNum) || amountNum <= 0) {
+        return res.status(400).json({ success: false, error_code: 'invalid_amount', error: 'Invalid amount' });
+      }
+      resolvedNewAmount = amountNum;
+    }
+
+    const resolvedNewCategory = !isEmpty(newCategory) ? newCategory : match.category;
+    const resolvedNewDate = !isEmpty(newDate) ? newDate : match.date;
+
+    // ---------------------------------------------------------
+    // GUARD 1 — Balance check (only if the edited row IS or BECOMES an expense)
+    // Simulate balance EXCLUDING the old version of this row, then apply the new version.
+    // ---------------------------------------------------------
+    if (resolvedNewType === 'expense') {
+      const otherRows = rows.filter((r) => r.id !== id); // exclude the row being edited
+      const income = otherRows.filter((r) => r.type === 'income').reduce((sum, r) => sum + (parseFloat(r.amount) || 0), 0);
+      const expense = otherRows.filter((r) => r.type === 'expense').reduce((sum, r) => sum + (parseFloat(r.amount) || 0), 0);
+      const balanceWithoutThisRow = income - expense;
+      const projectedBalance = balanceWithoutThisRow - resolvedNewAmount;
+
+      if (projectedBalance < 0) {
+        return res.status(409).json({
+          success: false,
+          error_code: 'insufficient_balance',
+          error: 'This change would exceed your available balance',
+          current_balance_excluding_this_transaction: balanceWithoutThisRow,
+          attempted_amount: resolvedNewAmount,
+          projected_balance: projectedBalance,
+        });
+      }
+    }
+
+    // ---------------------------------------------------------
+    // GUARD 2 — Budget check (only if the edited row IS or BECOMES an expense,
+    // matching an active, category-linked budget for its NEW date/category)
+    // ---------------------------------------------------------
+    if (resolvedNewType === 'expense') {
+      const budgetRows = await readSheetRows(sheets, BUDGETS_SHEET, BUDGETS_HEADERS);
+      const matchedBudget = findActiveBudgetForCategory(budgetRows, resolvedNewCategory, resolvedNewDate);
+
+      if (matchedBudget) {
+        const otherRows = rows.filter((r) => r.id !== id); // exclude the row being edited
+        const spentExcludingThisRow = otherRows
+          .filter(
+            (t) =>
+              t.type === 'expense' &&
+              t.category.toLowerCase() === matchedBudget.linked_category.toLowerCase() &&
+              t.date >= matchedBudget.period_start &&
+              t.date <= matchedBudget.period_end
+          )
+          .reduce((sum, t) => sum + (parseFloat(t.amount) || 0), 0);
+
+        const budgetAmount = parseFloat(matchedBudget.amount) || 0;
+        const projectedSpent = spentExcludingThisRow + resolvedNewAmount;
+
+        if (projectedSpent > budgetAmount) {
+          return res.status(409).json({
+            success: false,
+            error_code: 'budget_exceeded',
+            error: `This change would exceed your "${matchedBudget.title}" budget`,
+            budget_title: matchedBudget.title,
+            budget_linked_category: matchedBudget.linked_category,
+            budget_amount: budgetAmount,
+            spent_excluding_this_transaction: spentExcludingThisRow,
+            attempted_amount: resolvedNewAmount,
+            would_exceed_by: projectedSpent - budgetAmount,
+          });
+        }
+      }
     }
 
     const updated = { ...match };
     const fieldsUpdated = [];
 
     if (!isEmpty(newDate)) { updated.date = newDate; fieldsUpdated.push('date'); }
-
-    if (!isEmpty(newType)) {
-      const t = String(newType).toLowerCase();
-      if (!['income', 'expense'].includes(t)) {
-        return res.status(400).json({ success: false, error: 'Invalid type — must be "income" or "expense"' });
-      }
-      updated.type = t;
-      fieldsUpdated.push('type');
-    }
-
+    if (!isEmpty(newType)) { updated.type = resolvedNewType; fieldsUpdated.push('type'); }
     if (!isEmpty(newCategory)) { updated.category = newCategory; fieldsUpdated.push('category'); }
-
-    if (!isEmpty(newAmountRaw)) {
-      const amountNum = parseFloat(newAmountRaw);
-      if (isNaN(amountNum) || amountNum <= 0) {
-        return res.status(400).json({ success: false, error: 'Invalid amount' });
-      }
-      updated.amount = amountNum;
-      fieldsUpdated.push('amount');
-    }
-
+    if (!isEmpty(newAmountRaw)) { updated.amount = resolvedNewAmount; fieldsUpdated.push('amount'); }
     if (!isEmpty(newDescription)) { updated.description = newDescription; fieldsUpdated.push('description'); }
 
     updated.updated = nowISO();
@@ -288,7 +463,7 @@ app.post('/api/finance/edit-transaction', async (req, res) => {
     });
   } catch (error) {
     console.error('Edit transaction error:', error);
-    return res.status(500).json({ success: false, error: error.message });
+    return res.status(500).json({ success: false, error_code: 'server_error', error: error.message });
   }
 });
 
