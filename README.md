@@ -251,7 +251,7 @@ All requests to the backend proxy should be sent with the `Content-Type: applica
 
 #### 1.1 Create Transaction
 * **Endpoint:** `POST /api/finance/create-transaction`
-* **Description:** Logs a new transaction (income or expense) into the `Transactions` sheet. Expenses are subject to balance and budget guardrails.
+* **Description:** Logs a new transaction (income or expense) into the `Transactions` sheet. Expenses are subject to strict balance and budget safety guards.
 * **Request Body:**
   ```json
   {
@@ -262,7 +262,7 @@ All requests to the backend proxy should be sent with the `Content-Type: applica
     "description": "Kopi"
   }
   ```
-* **Response (Success - Expense):**
+* **Response (Success - Expense with matched budget):**
   ```json
   {
     "success": true,
@@ -287,9 +287,44 @@ All requests to the backend proxy should be sent with the `Content-Type: applica
   }
   ```
 
+##### ⚠️ Safety Guard Violations (Error 409 Conflict)
+
+If an expense violates one of the safety checks, the server blocks the write and returns a `409` status code:
+
+###### A. Balance Safety Guard Triggered (Projected Balance < 0)
+Occurs when logging the expense would drive the all-time balance negative.
+```json
+{
+  "success": false,
+  "error_code": "insufficient_balance",
+  "error": "This expense would exceed your available balance",
+  "current_balance": 15000,
+  "attempted_amount": 25000,
+  "projected_balance": -10000
+}
+```
+
+###### B. Budget Safety Guard Triggered (Category Budget Exceeded)
+Occurs when the expense belongs to a category with an active budget, and the new transaction would push total spending for that period beyond the limit.
+```json
+{
+  "success": false,
+  "error_code": "budget_exceeded",
+  "error": "This expense would exceed your \"Makanan\" budget",
+  "budget_title": "Makan Bulan Ini",
+  "budget_linked_category": "Makanan",
+  "budget_amount": 1000000,
+  "spent_before": 985000,
+  "attempted_amount": 25000,
+  "would_exceed_by": 10000
+}
+```
+
+---
+
 #### 1.2 Edit Transaction
 * **Endpoint:** `POST /api/finance/edit-transaction`
-* **Description:** Modifies an existing transaction. Applies the same balance/budget guardrails simulated with the updated values.
+* **Description:** Modifies an existing transaction. Applies the same balance/budget guardrails simulated with the updated values (excluding the original state of this transaction).
 * **Request Body:**
   ```json
   {
@@ -316,6 +351,37 @@ All requests to the backend proxy should be sent with the `Content-Type: applica
   }
   ```
 
+##### ⚠️ Safety Guard Violations during Edit (Error 409 Conflict)
+
+###### A. Edit Balance Guard Triggered
+```json
+{
+  "success": false,
+  "error_code": "insufficient_balance",
+  "error": "This change would exceed your available balance",
+  "current_balance_excluding_this_transaction": 10000,
+  "attempted_amount": 25000,
+  "projected_balance": -15000
+}
+```
+
+###### B. Edit Budget Guard Triggered
+```json
+{
+  "success": false,
+  "error_code": "budget_exceeded",
+  "error": "This change would exceed your \"Makanan\" budget",
+  "budget_title": "Makan Bulan Ini",
+  "budget_linked_category": "Makanan",
+  "budget_amount": 1000000,
+  "spent_excluding_this_transaction": 980000,
+  "attempted_amount": 30000,
+  "would_exceed_by": 10000
+}
+```
+
+---
+
 #### 1.3 Delete Transaction
 * **Endpoint:** `POST /api/finance/delete-transaction`
 * **Description:** Deletes a transaction from the spreadsheet.
@@ -332,6 +398,8 @@ All requests to the backend proxy should be sent with the `Content-Type: applica
     "deleted_id": "49df743a12b6f12d8a5c"
   }
   ```
+
+---
 
 #### 1.4 List Transactions
 * **Endpoint:** `POST /api/finance/list-transactions`
@@ -402,6 +470,8 @@ All requests to the backend proxy should be sent with the `Content-Type: applica
   }
   ```
 
+---
+
 #### 2.2 Edit Budget
 * **Endpoint:** `POST /api/finance/edit-budget`
 * **Description:** Modifies properties of an existing budget.
@@ -430,6 +500,8 @@ All requests to the backend proxy should be sent with the `Content-Type: applica
   }
   ```
 
+---
+
 #### 2.3 Delete Budget
 * **Endpoint:** `POST /api/finance/delete-budget`
 * **Description:** Deletes an existing budget.
@@ -446,6 +518,8 @@ All requests to the backend proxy should be sent with the `Content-Type: applica
     "deleted_id": "8bfa2e34c5d6e7f8a9b0"
   }
   ```
+
+---
 
 #### 2.4 List Budgets
 * **Endpoint:** `POST /api/finance/list-budgets`
@@ -578,6 +652,13 @@ All requests to the backend proxy should be sent with the `Content-Type: applica
   ```
 
 ##### E. Plan Feasibility Calculation (`query_type: "plan_calculate"`)
+Calculates whether a planned expense/income is affordable/feasible before it is logged.
+
+**Guard Logic & Priority:**
+1. **Budget Check:** If an active budget exists matching the category, it validates the transaction against the budget limit.
+2. **Balance Check:** If no active budget exists for the category, it falls back to checking against the all-time balance.
+
+###### Example 1: Checked against active Budget (Enough budget remaining)
 * **Request Body:**
   ```json
   {
@@ -588,7 +669,7 @@ All requests to the backend proxy should be sent with the `Content-Type: applica
     "date": "2026-07-22"
   }
   ```
-* **Response (Checked against Active Budget):**
+* **Response:**
   ```json
   {
     "success": true,
@@ -611,6 +692,97 @@ All requests to the backend proxy should be sent with the `Content-Type: applica
     "projected_spent": 250000,
     "remaining_after": 2250000,
     "enough": true
+  }
+  ```
+
+###### Example 2: Checked against active Budget (Exceeds budget limit)
+* **Request Body:**
+  ```json
+  {
+    "query_type": "plan_calculate",
+    "type": "expense",
+    "category": "Makanan",
+    "amount": 500000,
+    "date": "2026-07-22"
+  }
+  ```
+* **Response:**
+  ```json
+  {
+    "success": true,
+    "query_type": "plan_calculate",
+    "type": "expense",
+    "category": "Makanan",
+    "amount": 500000,
+    "date": "2026-07-22",
+    "checked_against": "budget",
+    "budget": {
+      "id": "8bfa2e34c5d6e7f8a9b0",
+      "title": "Makan Bulan Ini",
+      "linked_category": "Makanan",
+      "amount": 2500000,
+      "period_start": "2026-07-01",
+      "period_end": "2026-07-31"
+    },
+    "spent_before": 2200000,
+    "remaining_before": 300000,
+    "projected_spent": 2700000,
+    "remaining_after": -200000,
+    "enough": false
+  }
+  ```
+
+###### Example 3: Checked against Balance (No budget exists, enough balance)
+* **Request Body:**
+  ```json
+  {
+    "query_type": "plan_calculate",
+    "type": "expense",
+    "category": "Kesehatan",
+    "amount": 100000,
+    "date": "2026-07-22"
+  }
+  ```
+* **Response:**
+  ```json
+  {
+    "success": true,
+    "query_type": "plan_calculate",
+    "type": "expense",
+    "category": "Kesehatan",
+    "amount": 100000,
+    "date": "2026-07-22",
+    "checked_against": "balance",
+    "current_balance": 150000,
+    "projected_balance": 50000,
+    "enough": true
+  }
+  ```
+
+###### Example 4: Checked against Balance (No budget exists, insufficient balance)
+* **Request Body:**
+  ```json
+  {
+    "query_type": "plan_calculate",
+    "type": "expense",
+    "category": "Kesehatan",
+    "amount": 200000,
+    "date": "2026-07-22"
+  }
+  ```
+* **Response:**
+  ```json
+  {
+    "success": true,
+    "query_type": "plan_calculate",
+    "type": "expense",
+    "category": "Kesehatan",
+    "amount": 200000,
+    "date": "2026-07-22",
+    "checked_against": "balance",
+    "current_balance": 150000,
+    "projected_balance": -50000,
+    "enough": false
   }
   ```
 
