@@ -783,7 +783,7 @@ app.post('/api/finance/report', async (req, res) => {
     const body = req.body || {};
     const queryTypeRaw = unwrap(body.query_type);
 
-    const VALID_QUERY_TYPES = ['balance', 'budget_remaining', 'breakdown', 'period_comparison'];
+    const VALID_QUERY_TYPES = ['balance', 'budget_remaining', 'breakdown', 'period_comparison', 'plan_calculate'];
     const queryType = String(queryTypeRaw || '').trim();
 
     if (!VALID_QUERY_TYPES.includes(queryType)) {
@@ -914,6 +914,123 @@ app.post('/api/finance/report', async (req, res) => {
         current: { period: { dateMin: currentMin, dateMax: currentMax }, total: currentTotal },
         previous: { period: { dateMin: previousMin, dateMax: previousMax }, total: previousTotal },
         difference: currentTotal - previousTotal,
+      });
+    }
+
+    // ---------------------------------------------------------
+    // plan_calculate — for a PLANNED (not-yet-logged) transaction,
+    // check whether it's affordable, WITHOUT writing anything.
+    // Mirrors the same guard priority used in create-transaction:
+    //   1. If an active budget is linked to the category → check against that budget.
+    //   2. Otherwise → fall back to checking against the all-time balance.
+    // ---------------------------------------------------------
+    if (queryType === 'plan_calculate') {
+      const categoryRaw = unwrap(body.category);
+      const amountRaw = unwrap(body.amount);
+      const dateRaw = unwrap(body.date);
+      const typeRaw = unwrap(body.type);
+
+      if (isEmpty(categoryRaw) || isEmpty(amountRaw)) {
+        return res.status(400).json({
+          success: false,
+          error_code: 'missing_fields',
+          error: 'Missing category or amount for plan_calculate query',
+        });
+      }
+
+      const resolvedCategory = resolveCategory(categoryRaw);
+      if (!resolvedCategory) {
+        return res.status(400).json({
+          success: false,
+          error_code: 'invalid_category',
+          error: `Invalid category. Must be one of: ${VALID_CATEGORIES.join(', ')}`,
+        });
+      }
+
+      const amountNum = parseFloat(amountRaw);
+      if (isNaN(amountNum) || amountNum <= 0) {
+        return res.status(400).json({ success: false, error_code: 'invalid_amount', error: 'Invalid amount' });
+      }
+
+      const typeLower = isEmpty(typeRaw) ? 'expense' : String(typeRaw).toLowerCase();
+      if (!['income', 'expense'].includes(typeLower)) {
+        return res.status(400).json({ success: false, error_code: 'invalid_type', error: 'Invalid type — must be "income" or "expense"' });
+      }
+
+      const planDate = isEmpty(dateRaw) ? nowISO().slice(0, 10) : dateRaw;
+
+      if (typeLower === 'income') {
+        return res.json({
+          success: true,
+          query_type: 'plan_calculate',
+          type: 'income',
+          category: resolvedCategory,
+          amount: amountNum,
+          date: planDate,
+          checked_against: 'none',
+          enough: true,
+          reason: 'planned income does not require an affordability check',
+        });
+      }
+
+      const budgetRows = await readSheetRows(sheets, BUDGETS_SHEET, BUDGETS_HEADERS);
+      const matchedBudget = findActiveBudgetForCategory(budgetRows, resolvedCategory, planDate);
+
+      if (matchedBudget) {
+        const txRows = await readSheetRows(sheets, TRANSACTIONS_SHEET, TRANSACTIONS_HEADERS);
+        const spentBefore = txRows
+          .filter(
+            (t) =>
+              t.type === 'expense' &&
+              t.category.toLowerCase() === matchedBudget.linked_category.toLowerCase() &&
+              t.date >= matchedBudget.period_start &&
+              t.date <= matchedBudget.period_end
+          )
+          .reduce((sum, t) => sum + (parseFloat(t.amount) || 0), 0);
+
+        const budgetAmount = parseFloat(matchedBudget.amount) || 0;
+        const projectedSpent = spentBefore + amountNum;
+        const enough = projectedSpent <= budgetAmount;
+
+        return res.json({
+          success: true,
+          query_type: 'plan_calculate',
+          type: 'expense',
+          category: resolvedCategory,
+          amount: amountNum,
+          date: planDate,
+          checked_against: 'budget',
+          budget: {
+            id: matchedBudget.id,
+            title: matchedBudget.title,
+            linked_category: matchedBudget.linked_category,
+            amount: budgetAmount,
+            period_start: matchedBudget.period_start,
+            period_end: matchedBudget.period_end,
+          },
+          spent_before: spentBefore,
+          remaining_before: budgetAmount - spentBefore,
+          projected_spent: projectedSpent,
+          remaining_after: budgetAmount - projectedSpent,
+          enough,
+        });
+      }
+
+      const balanceInfo = await computeCurrentBalance(sheets);
+      const projectedBalance = balanceInfo.balance - amountNum;
+      const enough = projectedBalance >= 0;
+
+      return res.json({
+        success: true,
+        query_type: 'plan_calculate',
+        type: 'expense',
+        category: resolvedCategory,
+        amount: amountNum,
+        date: planDate,
+        checked_against: 'balance',
+        current_balance: balanceInfo.balance,
+        projected_balance: projectedBalance,
+        enough,
       });
     }
 
