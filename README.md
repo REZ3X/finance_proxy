@@ -132,8 +132,11 @@ Anything outside the core financial operations—such as greetings, general ques
 
 ![Share with Service Account](public/assets/share.png)
 
-6. <a id="integrate-sheets"></a>Look at your current sheets url at the browser, formatted like this **https://docs.google.com/spreadsheets/d/[sheets-id]/edit?**.
-Copy the **[sheets-id]** and save it.
+6. <a id="integrate-sheets"></a>Look at your current sheets url at the browser, formatted like this:
+```
+https://docs.google.com/spreadsheets/d/<sheets-id>/edit?.
+```
+Copy the **\<sheets-id\>** and save it.
 
 ---
 
