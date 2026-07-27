@@ -448,9 +448,12 @@ app.get('/api/finance/balance', async (req, res) => {
     const currentBalance = await readSummaryCellValue(sheets, summarySheet, STARTING_BALANCE_CELL);
     const parsed = parseFloat(String(currentBalance).replace(/[^0-9.\-]/g, ''));
 
+    const exists = !isNaN(parsed) && parsed !== 0 && currentBalance != null;
+
     return res.json({
       success: true,
       action: 'get',
+      exists,
       starting_balance: isNaN(parsed) ? null : parsed,
       starting_balance_raw: currentBalance,
       month: sheetSuffix(dateStr),
@@ -496,9 +499,12 @@ app.post('/api/finance/balance', async (req, res) => {
     const currentBalance = await readSummaryCellValue(sheets, summarySheet, STARTING_BALANCE_CELL);
     const parsed = parseFloat(String(currentBalance).replace(/[^0-9.\-]/g, ''));
 
+    const exists = !isNaN(parsed) && parsed !== 0 && currentBalance != null;
+
     return res.json({
       success: true,
       action: 'get',
+      exists,
       starting_balance: isNaN(parsed) ? null : parsed,
       starting_balance_raw: currentBalance,
       month: sheetSuffix(dateStr),
