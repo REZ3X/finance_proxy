@@ -810,6 +810,7 @@ app.post('/api/finance/edit-transaction', async (req, res) => {
 // ---------------------------------------------------------
 
 app.post('/api/finance/search-edit-transaction', async (req, res) => {
+  console.log('========== SEARCH-EDIT-TRANSACTION ==========');
   console.log('[DEBUG] RAW BODY:', JSON.stringify(req.body));
 
   try {
@@ -817,8 +818,8 @@ app.post('/api/finance/search-edit-transaction', async (req, res) => {
     const searchDate = unwrap(req.body.search_date);
     const searchCategory = unwrap(req.body.search_category);
     const searchAmount = unwrap(req.body.search_amount);
-    const searchType = unwrap(req.body.search_type);  // "expense" or "income"
-    const month = unwrap(req.body.month);              // "MM/YYYY" or date string
+    const searchType = unwrap(req.body.search_type);
+    const month = unwrap(req.body.month);
 
     const newDate = unwrap(req.body.new_date);
     const newAmountRaw = unwrap(req.body.new_amount);
@@ -828,46 +829,67 @@ app.post('/api/finance/search-edit-transaction', async (req, res) => {
     const targetRowIndexRaw = unwrap(req.body.target_row_index);
     const targetRowIndex = !isEmpty(targetRowIndexRaw) ? parseInt(targetRowIndexRaw, 10) : null;
 
-    // Require at least one search criterion or target_row_index
+    console.log('[DEBUG] Parsed criteria:', {
+      searchKeyword, searchDate, searchCategory, searchAmount, searchType, month, targetRowIndex,
+    });
+    console.log('[DEBUG] Parsed changes:', { newDate, newAmountRaw, newDescription, newCategory });
+
     if (isEmpty(searchKeyword) && isEmpty(searchDate) && isEmpty(searchCategory) && isEmpty(searchAmount) && targetRowIndex === null) {
+      console.log('[DEBUG] REJECTED: no search criterion or target_row_index provided');
       return res.status(400).json({
         success: false,
         error: 'At least one search criterion or target_row_index is required',
       });
     }
 
-    // Require at least one change
     if (isEmpty(newDate) && isEmpty(newAmountRaw) && isEmpty(newDescription) && isEmpty(newCategory)) {
+      console.log('[DEBUG] REJECTED: no change fields provided');
       return res.status(400).json({ success: false, error: 'No changes provided — nothing to update' });
     }
 
     const sheets = getSheetsClient();
     const dateStr = resolveMonthToDate(month || searchDate);
+    console.log('[DEBUG] resolveMonthToDate(month || searchDate) =', dateStr);
+
     await ensureMonthlySheets(sheets, dateStr);
     const txSheet = transactionsSheetName(dateStr);
+    console.log('[DEBUG] Target sheet:', txSheet);
 
-    // Determine which sides to search
     const sides = isEmpty(searchType)
       ? ['expense', 'income']
       : [String(searchType).toLowerCase()];
+    console.log('[DEBUG] Sides being searched:', sides);
 
     const criteria = { search_keyword: searchKeyword, search_date: searchDate, search_category: searchCategory, search_amount: searchAmount };
     let allMatches = [];
 
     for (const side of sides) {
       const rows = await readTransactionRows(sheets, txSheet, side);
+      console.log(`[DEBUG] Rows read from "${txSheet}" (${side}):`, JSON.stringify(rows));
+
       const matches = rows.filter((r) => {
-        if (targetRowIndex !== null) return r.rowIndex === targetRowIndex;
-        return matchesTransaction(r, criteria);
+        if (targetRowIndex !== null) {
+          const isMatch = r.rowIndex === targetRowIndex;
+          console.log(`[DEBUG]   row ${r.rowIndex} vs target_row_index=${targetRowIndex} → ${isMatch}`);
+          return isMatch;
+        }
+        const isMatch = matchesTransaction(r, criteria);
+        console.log(`[DEBUG]   row ${r.rowIndex} {date:"${r.date}", amount:${r.amount}, desc:"${r.description}", category:"${r.category}"} vs criteria ${JSON.stringify(criteria)} → ${isMatch}`);
+        return isMatch;
       });
+
       allMatches = allMatches.concat(matches);
     }
 
+    console.log('[DEBUG] Total matches found:', allMatches.length, JSON.stringify(allMatches));
+
     if (allMatches.length === 0) {
+      console.log('[DEBUG] RESULT: found=false, ambiguous=false');
       return res.json({ success: true, found: false, ambiguous: false, edited: false, candidates: [] });
     }
 
     if (allMatches.length > 1) {
+      console.log('[DEBUG] RESULT: ambiguous=true');
       return res.json({
         success: true,
         found: false,
@@ -877,8 +899,8 @@ app.post('/api/finance/search-edit-transaction', async (req, res) => {
       });
     }
 
-    // Exactly one match — apply edits
     const matched = allMatches[0];
+    console.log('[DEBUG] Single match — proceeding to edit:', JSON.stringify(matched));
     const typeLower = matched.type;
 
     const updated = {
@@ -888,11 +910,11 @@ app.post('/api/finance/search-edit-transaction', async (req, res) => {
       category: !isEmpty(newCategory) ? newCategory : matched.category,
     };
 
-    // Validate new category if provided
     if (!isEmpty(newCategory)) {
       const resolved = resolveCategory(newCategory, typeLower);
       if (!resolved) {
         const validList = (typeLower === 'income' ? INCOME_CATEGORIES : EXPENSE_CATEGORIES).map((c) => c.name);
+        console.log('[DEBUG] REJECTED: invalid new_category', newCategory);
         return res.status(400).json({
           success: false,
           error_code: 'invalid_category',
@@ -902,15 +924,16 @@ app.post('/api/finance/search-edit-transaction', async (req, res) => {
       updated.category = resolved;
     }
 
-    // Validate new amount if provided
     if (!isEmpty(newAmountRaw)) {
       const amountNum = parseFloat(newAmountRaw);
       if (isNaN(amountNum) || amountNum <= 0) {
+        console.log('[DEBUG] REJECTED: invalid new_amount', newAmountRaw);
         return res.status(400).json({ success: false, error_code: 'invalid_amount', error: 'Invalid amount' });
       }
       updated.amount = amountNum;
     }
 
+    console.log('[DEBUG] Writing update to row', matched.rowIndex, ':', JSON.stringify(updated));
     await updateTransactionRow(sheets, txSheet, typeLower, matched.rowIndex, updated);
 
     const fieldsUpdated = [];
@@ -918,6 +941,8 @@ app.post('/api/finance/search-edit-transaction', async (req, res) => {
     if (!isEmpty(newAmountRaw)) fieldsUpdated.push('amount');
     if (!isEmpty(newDescription)) fieldsUpdated.push('description');
     if (!isEmpty(newCategory)) fieldsUpdated.push('category');
+
+    console.log('[DEBUG] SUCCESS. Fields updated:', fieldsUpdated);
 
     return res.json({
       success: true,
@@ -929,7 +954,7 @@ app.post('/api/finance/search-edit-transaction', async (req, res) => {
       sheet: txSheet,
     });
   } catch (error) {
-    console.error('Search-edit transaction error:', error);
+    console.error('[DEBUG] Search-edit transaction error:', error);
     return res.status(500).json({ success: false, error: error.message });
   }
 });
