@@ -26,6 +26,29 @@ const BASE_TRANSACTIONS = 'Transactions';
 //   A=Date  B=Amount  C=Description  D=Category   (Expenses)
 //   F=Date  G=Amount  H=Description  I=Category   (Income)
 
+/**
+ * Safely parse a date string which might be in YYYY-MM-DD, DD/MM/YYYY, or MM/DD/YYYY.
+ */
+function parseTxDate(str) {
+  if (!str) return 0;
+  const s = String(str).trim();
+  if (s.match(/^\d{4}-\d{2}-\d{2}$/)) {
+    const ts = new Date(s).getTime();
+    if (!isNaN(ts)) return ts;
+  }
+  const parts = s.split(/[\/\-]/);
+  if (parts.length === 3 && parts[2].length === 4) {
+    const p0 = parseInt(parts[0], 10);
+    const p1 = parseInt(parts[1], 10);
+    const p2 = parseInt(parts[2], 10);
+    if (p1 > 12) {
+      return new Date(`${p2}-${p0.toString().padStart(2, '0')}-${p1.toString().padStart(2, '0')}`).getTime();
+    }
+    return new Date(`${p2}-${p1.toString().padStart(2, '0')}-${p0.toString().padStart(2, '0')}`).getTime();
+  }
+  return new Date(s).getTime();
+}
+
 const TX_HEADER_ROW = 4;
 const TX_DATA_START_ROW = 5;
 
