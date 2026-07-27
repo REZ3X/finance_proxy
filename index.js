@@ -192,7 +192,7 @@ async function getSheetGid(sheets, sheetName) {
   return sheet.sheetId;
 }
 
-async function cloneSheet(sheets, sourceTitle, newTitle) {
+async function cloneSheet(sheets, sourceTitle, newTitle, fixRefFrom = null, fixRefTo = null) {
   const allSheets = await listAllSheets(sheets);
   const source = allSheets.find((s) => s.title === sourceTitle);
   if (!source) throw new Error(`Source sheet "${sourceTitle}" not found for cloning`);
@@ -206,19 +206,34 @@ async function cloneSheet(sheets, sourceTitle, newTitle) {
 
   const newSheetId = dupRes.data.sheetId;
 
-  // Rename the duplicate
+  const requests = [
+    {
+      updateSheetProperties: {
+        properties: { sheetId: newSheetId, title: newTitle },
+        fields: 'title',
+      },
+    },
+  ];
+
+  // Fix formula references if needed (e.g. Transactions! -> 'Transactions 07/2026'!)
+  if (fixRefFrom && fixRefTo) {
+    requests.push({
+      findReplace: {
+        find: `${fixRefFrom}!`,
+        replacement: `'${fixRefTo}'!`,
+        sheetId: newSheetId,
+        matchCase: true,
+        matchEntireCell: false,
+        searchByRegex: false,
+        includeFormulas: true,
+      },
+    });
+  }
+
+  // Rename the duplicate and optionally fix references
   await sheets.spreadsheets.batchUpdate({
     spreadsheetId: SPREADSHEET_ID,
-    requestBody: {
-      requests: [
-        {
-          updateSheetProperties: {
-            properties: { sheetId: newSheetId, title: newTitle },
-            fields: 'title',
-          },
-        },
-      ],
-    },
+    requestBody: { requests },
   });
 
   return newSheetId;
@@ -242,7 +257,7 @@ async function ensureMonthlySheets(sheets, dateStr) {
     await cloneSheet(sheets, BASE_TRANSACTIONS, txName);
   }
   if (!sumExists) {
-    await cloneSheet(sheets, BASE_SUMMARY, sumName);
+    await cloneSheet(sheets, BASE_SUMMARY, sumName, BASE_TRANSACTIONS, txName);
   }
 
   return { transactionsSheet: txName, summarySheet: sumName, created: !txExists || !sumExists };
