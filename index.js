@@ -325,6 +325,8 @@ async function readTransactionRows(sheets, sheetName, side) {
   const res = await sheets.spreadsheets.values.get({
     spreadsheetId: SPREADSHEET_ID,
     range,
+    valueRenderOption: 'UNFORMATTED_VALUE',
+    dateTimeRenderOption: 'FORMATTED_STRING'
   });
 
   const rows = res.data.values || [];
@@ -404,6 +406,8 @@ async function readSummaryCellValue(sheets, sheetName, cell) {
   const res = await sheets.spreadsheets.values.get({
     spreadsheetId: SPREADSHEET_ID,
     range,
+    valueRenderOption: 'UNFORMATTED_VALUE',
+    dateTimeRenderOption: 'FORMATTED_STRING'
   });
   const values = res.data.values;
   if (!values || values.length === 0 || values[0].length === 0) return null;
@@ -428,6 +432,8 @@ async function readSummaryMultipleCells(sheets, sheetName, cells) {
   const res = await sheets.spreadsheets.values.batchGet({
     spreadsheetId: SPREADSHEET_ID,
     ranges,
+    valueRenderOption: 'UNFORMATTED_VALUE',
+    dateTimeRenderOption: 'FORMATTED_STRING'
   });
   const result = {};
   (res.data.valueRanges || []).forEach((vr, idx) => {
