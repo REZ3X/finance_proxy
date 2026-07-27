@@ -456,7 +456,13 @@ function matchesTransaction(row, criteria) {
   }
 
   if (!isEmpty(criteria.search_date)) {
-    ok = ok && row.date === criteria.search_date;
+    const rd = parseTxDate(row.date);
+    const sd = parseTxDate(criteria.search_date);
+    if (rd !== 0 && sd !== 0) {
+      ok = ok && rd === sd;
+    } else {
+      ok = ok && row.date === criteria.search_date;
+    }
   }
 
   if (!isEmpty(criteria.search_category)) {
