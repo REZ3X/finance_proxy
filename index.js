@@ -260,6 +260,29 @@ async function ensureMonthlySheets(sheets, dateStr) {
     await cloneSheet(sheets, BASE_SUMMARY, sumName, BASE_TRANSACTIONS, txName);
   }
 
+  // Clear dummy data from the template for whichever sheets were just created
+  const rangesToClear = [];
+  if (!sumExists) {
+    rangesToClear.push(
+      `'${sumName}'!L8`,        // Starting balance
+      `'${sumName}'!C24:C37`,   // Planned expenses
+      `'${sumName}'!I24:I29`    // Planned income
+    );
+  }
+  if (!txExists) {
+    rangesToClear.push(
+      `'${txName}'!A4:D`,       // Expense transactions
+      `'${txName}'!F4:I`        // Income transactions
+    );
+  }
+
+  if (rangesToClear.length > 0) {
+    await sheets.spreadsheets.values.batchClear({
+      spreadsheetId: SPREADSHEET_ID,
+      requestBody: { ranges: rangesToClear },
+    });
+  }
+
   return { transactionsSheet: txName, summarySheet: sumName, created: !txExists || !sumExists };
 }
 
