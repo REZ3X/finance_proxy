@@ -26,12 +26,12 @@ const BASE_TRANSACTIONS = 'Transactions';
 //   A=Date  B=Amount  C=Description  D=Category   (Expenses)
 //   F=Date  G=Amount  H=Description  I=Category   (Income)
 
-const TX_HEADER_ROW = 3;
-const TX_DATA_START_ROW = 4;
+const TX_HEADER_ROW = 4;
+const TX_DATA_START_ROW = 5;
 
 const TX_COLS = {
-  expense: { date: 'A', amount: 'B', description: 'C', category: 'D', first: 'A', last: 'D' },
-  income:  { date: 'F', amount: 'G', description: 'H', category: 'I', first: 'F', last: 'I' },
+  expense: { date: 'B', amount: 'C', description: 'D', category: 'E', first: 'B', last: 'E' },
+  income:  { date: 'G', amount: 'H', description: 'I', category: 'J', first: 'G', last: 'J' },
 };
 
 // ---------------------------------------------------------
@@ -45,37 +45,37 @@ const TX_COLS = {
 const STARTING_BALANCE_CELL = 'L8';
 
 const EXPENSE_CATEGORIES = [
-  { name: 'Food',              row: 24, plannedCell: 'C24', actualCell: 'D24', diffCell: 'E24' },
-  { name: 'Gifts',             row: 25, plannedCell: 'C25', actualCell: 'D25', diffCell: 'E25' },
-  { name: 'Health/medical',    row: 26, plannedCell: 'C26', actualCell: 'D26', diffCell: 'E26' },
-  { name: 'Home',              row: 27, plannedCell: 'C27', actualCell: 'D27', diffCell: 'E27' },
-  { name: 'Transportation',    row: 28, plannedCell: 'C28', actualCell: 'D28', diffCell: 'E28' },
-  { name: 'Personal',          row: 29, plannedCell: 'C29', actualCell: 'D29', diffCell: 'E29' },
-  { name: 'Pets',              row: 30, plannedCell: 'C30', actualCell: 'D30', diffCell: 'E30' },
-  { name: 'Utilities',         row: 31, plannedCell: 'C31', actualCell: 'D31', diffCell: 'E31' },
-  { name: 'Travel',            row: 32, plannedCell: 'C32', actualCell: 'D32', diffCell: 'E32' },
-  { name: 'Debt',              row: 33, plannedCell: 'C33', actualCell: 'D33', diffCell: 'E33' },
-  { name: 'Other',             row: 34, plannedCell: 'C34', actualCell: 'D34', diffCell: 'E34' },
-  { name: 'Custom category 1', row: 35, plannedCell: 'C35', actualCell: 'D35', diffCell: 'E35' },
-  { name: 'Custom category 2', row: 36, plannedCell: 'C36', actualCell: 'D36', diffCell: 'E36' },
-  { name: 'Custom category 3', row: 37, plannedCell: 'C37', actualCell: 'D37', diffCell: 'E37' },
+  { name: 'Food',              row: 28, plannedCell: 'D28', actualCell: 'E28', diffCell: 'F28' },
+  { name: 'Gifts',             row: 29, plannedCell: 'D29', actualCell: 'E29', diffCell: 'F29' },
+  { name: 'Health/medical',    row: 30, plannedCell: 'D30', actualCell: 'E30', diffCell: 'F30' },
+  { name: 'Home',              row: 31, plannedCell: 'D31', actualCell: 'E31', diffCell: 'F31' },
+  { name: 'Transportation',    row: 32, plannedCell: 'D32', actualCell: 'E32', diffCell: 'F32' },
+  { name: 'Personal',          row: 33, plannedCell: 'D33', actualCell: 'E33', diffCell: 'F33' },
+  { name: 'Pets',              row: 34, plannedCell: 'D34', actualCell: 'E34', diffCell: 'F34' },
+  { name: 'Utilities',         row: 35, plannedCell: 'D35', actualCell: 'E35', diffCell: 'F35' },
+  { name: 'Travel',            row: 36, plannedCell: 'D36', actualCell: 'E36', diffCell: 'F36' },
+  { name: 'Debt',              row: 37, plannedCell: 'D37', actualCell: 'E37', diffCell: 'F37' },
+  { name: 'Other',             row: 38, plannedCell: 'D38', actualCell: 'E38', diffCell: 'F38' },
+  { name: 'Custom category 1', row: 39, plannedCell: 'D39', actualCell: 'E39', diffCell: 'F39' },
+  { name: 'Custom category 2', row: 40, plannedCell: 'D40', actualCell: 'E40', diffCell: 'F40' },
+  { name: 'Custom category 3', row: 41, plannedCell: 'D41', actualCell: 'E41', diffCell: 'F41' },
 ];
 
 const INCOME_CATEGORIES = [
-  { name: 'Savings',           row: 24, plannedCell: 'I24', actualCell: 'J24', diffCell: 'K24' },
-  { name: 'Paycheck',          row: 25, plannedCell: 'I25', actualCell: 'J25', diffCell: 'K25' },
-  { name: 'Bonus',             row: 26, plannedCell: 'I26', actualCell: 'J26', diffCell: 'K26' },
-  { name: 'Interest',          row: 27, plannedCell: 'I27', actualCell: 'J27', diffCell: 'K27' },
-  { name: 'Other',             row: 28, plannedCell: 'I28', actualCell: 'J28', diffCell: 'K28' },
-  { name: 'Custom category',   row: 29, plannedCell: 'I29', actualCell: 'J29', diffCell: 'K29' },
+  { name: 'Savings',           row: 28, plannedCell: 'J28', actualCell: 'K28', diffCell: 'L28' },
+  { name: 'Paycheck',          row: 29, plannedCell: 'J29', actualCell: 'K29', diffCell: 'L29' },
+  { name: 'Bonus',             row: 30, plannedCell: 'J30', actualCell: 'K30', diffCell: 'L30' },
+  { name: 'Interest',          row: 31, plannedCell: 'J31', actualCell: 'K31', diffCell: 'L31' },
+  { name: 'Other',             row: 32, plannedCell: 'J32', actualCell: 'K32', diffCell: 'L32' },
+  { name: 'Custom category',   row: 33, plannedCell: 'J33', actualCell: 'K33', diffCell: 'L33' },
 ];
 
 // Summary totals cells
 const SUMMARY_CELLS = {
-  expensesPlannedTotal: 'C22',
-  expensesActualTotal:  'D22',
-  incomePlannedTotal:   'I22',
-  incomeActualTotal:    'J22',
+  expensesPlannedTotal: 'D26',
+  expensesActualTotal:  'E26',
+  incomePlannedTotal:   'J26',
+  incomeActualTotal:    'K26',
   startBalance:         'L8',
 };
 
@@ -265,14 +265,14 @@ async function ensureMonthlySheets(sheets, dateStr) {
   if (!sumExists) {
     rangesToClear.push(
       `'${sumName}'!L8`,        // Starting balance
-      `'${sumName}'!C24:C37`,   // Planned expenses
-      `'${sumName}'!I24:I29`    // Planned income
+      `'${sumName}'!D28:D41`,   // Planned expenses
+      `'${sumName}'!J28:J33`    // Planned income
     );
   }
   if (!txExists) {
     rangesToClear.push(
-      `'${txName}'!A4:D`,       // Expense transactions
-      `'${txName}'!F4:I`        // Income transactions
+      `'${txName}'!B5:E`,       // Expense transactions
+      `'${txName}'!G5:J`        // Income transactions
     );
   }
 
