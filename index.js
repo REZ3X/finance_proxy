@@ -860,7 +860,12 @@ app.post('/api/finance/search-edit-transaction', async (req, res) => {
       : [String(searchType).toLowerCase()];
     console.log('[DEBUG] Sides being searched:', sides);
 
-    const criteria = { search_keyword: searchKeyword, search_date: searchDate, search_category: searchCategory, search_amount: searchAmount };
+    // PASS 1: soft criteria — keyword/date/category only. Amount is
+    // deliberately excluded here because it's the field most likely to have
+    // already changed since the user last checked (e.g. a prior edit), so
+    // treating it as a hard requirement can cause false "not found" results
+    // even when keyword+date already uniquely identify the transaction.
+    const softCriteria = { search_keyword: searchKeyword, search_date: searchDate, search_category: searchCategory };
     let allMatches = [];
 
     for (const side of sides) {
@@ -873,12 +878,33 @@ app.post('/api/finance/search-edit-transaction', async (req, res) => {
           console.log(`[DEBUG]   row ${r.rowIndex} vs target_row_index=${targetRowIndex} → ${isMatch}`);
           return isMatch;
         }
-        const isMatch = matchesTransaction(r, criteria);
-        console.log(`[DEBUG]   row ${r.rowIndex} {date:"${r.date}", amount:${r.amount}, desc:"${r.description}", category:"${r.category}"} vs criteria ${JSON.stringify(criteria)} → ${isMatch}`);
+        const isMatch = matchesTransaction(r, softCriteria);
+        console.log(`[DEBUG]   row ${r.rowIndex} {date:"${r.date}", amount:${r.amount}, desc:"${r.description}", category:"${r.category}"} vs soft criteria ${JSON.stringify(softCriteria)} → ${isMatch}`);
         return isMatch;
       });
 
       allMatches = allMatches.concat(matches);
+    }
+
+    console.log('[DEBUG] Soft-match total:', allMatches.length, JSON.stringify(allMatches));
+
+    // PASS 2: only if soft criteria left more than one candidate, use
+    // search_amount to narrow down — a genuine disambiguator, not a
+    // required filter.
+    if (allMatches.length > 1 && !isEmpty(searchAmount) && targetRowIndex === null) {
+      const searchAmt = parseFloat(searchAmount);
+      const amountNarrowed = allMatches.filter((r) => {
+        const rowAmt = parseFloat(r.amount);
+        const isMatch = !isNaN(searchAmt) && !isNaN(rowAmt) && Math.abs(rowAmt - searchAmt) < 0.01;
+        console.log(`[DEBUG]   (amount tiebreak) row ${r.rowIndex} amount=${rowAmt} vs search_amount=${searchAmt} → ${isMatch}`);
+        return isMatch;
+      });
+      if (amountNarrowed.length > 0) {
+        console.log('[DEBUG] Amount tiebreak narrowed matches from', allMatches.length, 'to', amountNarrowed.length);
+        allMatches = amountNarrowed;
+      } else {
+        console.log('[DEBUG] Amount tiebreak matched nothing — keeping original soft-match candidates (amount may be stale)');
+      }
     }
 
     console.log('[DEBUG] Total matches found:', allMatches.length, JSON.stringify(allMatches));
