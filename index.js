@@ -73,7 +73,7 @@ const TX_DATA_START_ROW = 5;
 
 const TX_COLS = {
   expense: { date: 'B', amount: 'C', description: 'D', category: 'E', first: 'B', last: 'E' },
-  income:  { date: 'G', amount: 'H', description: 'I', category: 'J', first: 'G', last: 'J' },
+  income: { date: 'G', amount: 'H', description: 'I', category: 'J', first: 'G', last: 'J' },
 };
 
 // ---------------------------------------------------------
@@ -87,38 +87,38 @@ const TX_COLS = {
 const STARTING_BALANCE_CELL = 'L8';
 
 const EXPENSE_CATEGORIES = [
-  { name: 'Food',              row: 28, plannedCell: 'D28', actualCell: 'E28', diffCell: 'F28' },
-  { name: 'Gifts',             row: 29, plannedCell: 'D29', actualCell: 'E29', diffCell: 'F29' },
-  { name: 'Health/medical',    row: 30, plannedCell: 'D30', actualCell: 'E30', diffCell: 'F30' },
-  { name: 'Home',              row: 31, plannedCell: 'D31', actualCell: 'E31', diffCell: 'F31' },
-  { name: 'Transportation',    row: 32, plannedCell: 'D32', actualCell: 'E32', diffCell: 'F32' },
-  { name: 'Personal',          row: 33, plannedCell: 'D33', actualCell: 'E33', diffCell: 'F33' },
-  { name: 'Pets',              row: 34, plannedCell: 'D34', actualCell: 'E34', diffCell: 'F34' },
-  { name: 'Utilities',         row: 35, plannedCell: 'D35', actualCell: 'E35', diffCell: 'F35' },
-  { name: 'Travel',            row: 36, plannedCell: 'D36', actualCell: 'E36', diffCell: 'F36' },
-  { name: 'Debt',              row: 37, plannedCell: 'D37', actualCell: 'E37', diffCell: 'F37' },
-  { name: 'Other',             row: 38, plannedCell: 'D38', actualCell: 'E38', diffCell: 'F38' },
+  { name: 'Food', row: 28, plannedCell: 'D28', actualCell: 'E28', diffCell: 'F28' },
+  { name: 'Gifts', row: 29, plannedCell: 'D29', actualCell: 'E29', diffCell: 'F29' },
+  { name: 'Health/medical', row: 30, plannedCell: 'D30', actualCell: 'E30', diffCell: 'F30' },
+  { name: 'Home', row: 31, plannedCell: 'D31', actualCell: 'E31', diffCell: 'F31' },
+  { name: 'Transportation', row: 32, plannedCell: 'D32', actualCell: 'E32', diffCell: 'F32' },
+  { name: 'Personal', row: 33, plannedCell: 'D33', actualCell: 'E33', diffCell: 'F33' },
+  { name: 'Pets', row: 34, plannedCell: 'D34', actualCell: 'E34', diffCell: 'F34' },
+  { name: 'Utilities', row: 35, plannedCell: 'D35', actualCell: 'E35', diffCell: 'F35' },
+  { name: 'Travel', row: 36, plannedCell: 'D36', actualCell: 'E36', diffCell: 'F36' },
+  { name: 'Debt', row: 37, plannedCell: 'D37', actualCell: 'E37', diffCell: 'F37' },
+  { name: 'Other', row: 38, plannedCell: 'D38', actualCell: 'E38', diffCell: 'F38' },
   { name: 'Custom category 1', row: 39, plannedCell: 'D39', actualCell: 'E39', diffCell: 'F39' },
   { name: 'Custom category 2', row: 40, plannedCell: 'D40', actualCell: 'E40', diffCell: 'F40' },
   { name: 'Custom category 3', row: 41, plannedCell: 'D41', actualCell: 'E41', diffCell: 'F41' },
 ];
 
 const INCOME_CATEGORIES = [
-  { name: 'Savings',           row: 28, plannedCell: 'J28', actualCell: 'K28', diffCell: 'L28' },
-  { name: 'Paycheck',          row: 29, plannedCell: 'J29', actualCell: 'K29', diffCell: 'L29' },
-  { name: 'Bonus',             row: 30, plannedCell: 'J30', actualCell: 'K30', diffCell: 'L30' },
-  { name: 'Interest',          row: 31, plannedCell: 'J31', actualCell: 'K31', diffCell: 'L31' },
-  { name: 'Other',             row: 32, plannedCell: 'J32', actualCell: 'K32', diffCell: 'L32' },
-  { name: 'Custom category',   row: 33, plannedCell: 'J33', actualCell: 'K33', diffCell: 'L33' },
+  { name: 'Savings', row: 28, plannedCell: 'J28', actualCell: 'K28', diffCell: 'L28' },
+  { name: 'Paycheck', row: 29, plannedCell: 'J29', actualCell: 'K29', diffCell: 'L29' },
+  { name: 'Bonus', row: 30, plannedCell: 'J30', actualCell: 'K30', diffCell: 'L30' },
+  { name: 'Interest', row: 31, plannedCell: 'J31', actualCell: 'K31', diffCell: 'L31' },
+  { name: 'Other', row: 32, plannedCell: 'J32', actualCell: 'K32', diffCell: 'L32' },
+  { name: 'Custom category', row: 33, plannedCell: 'J33', actualCell: 'K33', diffCell: 'L33' },
 ];
 
 // Summary totals cells
 const SUMMARY_CELLS = {
   expensesPlannedTotal: 'D26',
-  expensesActualTotal:  'E26',
-  incomePlannedTotal:   'J26',
-  incomeActualTotal:    'K26',
-  startBalance:         'L8',
+  expensesActualTotal: 'E26',
+  incomePlannedTotal: 'J26',
+  incomeActualTotal: 'K26',
+  startBalance: 'L8',
 };
 
 // ---------------------------------------------------------
@@ -810,6 +810,8 @@ app.post('/api/finance/edit-transaction', async (req, res) => {
 // ---------------------------------------------------------
 
 app.post('/api/finance/search-edit-transaction', async (req, res) => {
+  console.log('[DEBUG] RAW BODY:', JSON.stringify(req.body));
+
   try {
     const searchKeyword = unwrap(req.body.search_keyword);
     const searchDate = unwrap(req.body.search_date);
