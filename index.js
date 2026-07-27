@@ -41,10 +41,29 @@ function parseTxDate(str) {
     const p0 = parseInt(parts[0], 10);
     const p1 = parseInt(parts[1], 10);
     const p2 = parseInt(parts[2], 10);
-    if (p1 > 12) {
-      return new Date(`${p2}-${p0.toString().padStart(2, '0')}-${p1.toString().padStart(2, '0')}`).getTime();
+
+    // p0/p1/p2 could be MM/DD/YYYY or DD/MM/YYYY — disambiguate using
+    // whichever of p0/p1 is > 12 (that one MUST be the day, since months
+    // only go up to 12). If neither is > 12, assume MM/DD/YYYY (matches
+    // this sheet's actual format, e.g. "7/27/2026").
+    let month, day;
+    if (p0 > 12) {
+      // p0 can't be a month → p0 is day, p1 is month (DD/MM/YYYY)
+      day = p0;
+      month = p1;
+    } else if (p1 > 12) {
+      // p1 can't be a month → p0 is month, p1 is day (MM/DD/YYYY)
+      month = p0;
+      day = p1;
+    } else {
+      // ambiguous (both ≤ 12) — default to MM/DD/YYYY
+      month = p0;
+      day = p1;
     }
-    return new Date(`${p2}-${p1.toString().padStart(2, '0')}-${p0.toString().padStart(2, '0')}`).getTime();
+
+    const ts = new Date(`${p2}-${String(month).padStart(2, '0')}-${String(day).padStart(2, '0')}`).getTime();
+    if (!isNaN(ts)) return ts;
+    return 0;
   }
   return new Date(s).getTime();
 }
