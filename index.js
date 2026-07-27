@@ -798,11 +798,14 @@ app.post('/api/finance/search-edit-transaction', async (req, res) => {
     const newDescription = unwrap(req.body.new_description);
     const newCategory = unwrap(req.body.new_category);
 
-    // Require at least one search criterion
-    if (isEmpty(searchKeyword) && isEmpty(searchDate) && isEmpty(searchCategory) && isEmpty(searchAmount)) {
+    const targetRowIndexRaw = unwrap(req.body.target_row_index);
+    const targetRowIndex = !isEmpty(targetRowIndexRaw) ? parseInt(targetRowIndexRaw, 10) : null;
+
+    // Require at least one search criterion or target_row_index
+    if (isEmpty(searchKeyword) && isEmpty(searchDate) && isEmpty(searchCategory) && isEmpty(searchAmount) && targetRowIndex === null) {
       return res.status(400).json({
         success: false,
-        error: 'At least one search criterion (search_keyword, search_date, search_category, or search_amount) is required',
+        error: 'At least one search criterion or target_row_index is required',
       });
     }
 
@@ -826,7 +829,10 @@ app.post('/api/finance/search-edit-transaction', async (req, res) => {
 
     for (const side of sides) {
       const rows = await readTransactionRows(sheets, txSheet, side);
-      const matches = rows.filter((r) => matchesTransaction(r, criteria));
+      const matches = rows.filter((r) => {
+        if (targetRowIndex !== null) return r.rowIndex === targetRowIndex;
+        return matchesTransaction(r, criteria);
+      });
       allMatches = allMatches.concat(matches);
     }
 
@@ -964,10 +970,13 @@ app.post('/api/finance/search-delete-transaction', async (req, res) => {
     const searchType = unwrap(req.body.search_type);
     const month = unwrap(req.body.month);
 
-    if (isEmpty(searchKeyword) && isEmpty(searchDate) && isEmpty(searchCategory) && isEmpty(searchAmount)) {
+    const targetRowIndexRaw = unwrap(req.body.target_row_index);
+    const targetRowIndex = !isEmpty(targetRowIndexRaw) ? parseInt(targetRowIndexRaw, 10) : null;
+
+    if (isEmpty(searchKeyword) && isEmpty(searchDate) && isEmpty(searchCategory) && isEmpty(searchAmount) && targetRowIndex === null) {
       return res.status(400).json({
         success: false,
-        error: 'At least one search criterion (search_keyword, search_date, search_category, or search_amount) is required',
+        error: 'At least one search criterion or target_row_index is required',
       });
     }
 
@@ -985,7 +994,10 @@ app.post('/api/finance/search-delete-transaction', async (req, res) => {
 
     for (const side of sides) {
       const rows = await readTransactionRows(sheets, txSheet, side);
-      const matches = rows.filter((r) => matchesTransaction(r, criteria));
+      const matches = rows.filter((r) => {
+        if (targetRowIndex !== null) return r.rowIndex === targetRowIndex;
+        return matchesTransaction(r, criteria);
+      });
       allMatches = allMatches.concat(matches);
     }
 
