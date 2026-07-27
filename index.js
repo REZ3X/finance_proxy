@@ -437,6 +437,32 @@ function matchesBudget(categoryEntry, criteria) {
 // Balance Endpoint
 // ---------------------------------------------------------
 
+// GET — read-only balance check (browser-friendly)
+app.get('/api/finance/balance', async (req, res) => {
+  try {
+    const month = req.query.month || undefined;
+    const dateStr = resolveMonthToDate(month);
+    const sheets = getSheetsClient();
+    const { summarySheet } = await ensureMonthlySheets(sheets, dateStr);
+
+    const currentBalance = await readSummaryCellValue(sheets, summarySheet, STARTING_BALANCE_CELL);
+    const parsed = parseFloat(String(currentBalance).replace(/[^0-9.\-]/g, ''));
+
+    return res.json({
+      success: true,
+      action: 'get',
+      starting_balance: isNaN(parsed) ? null : parsed,
+      starting_balance_raw: currentBalance,
+      month: sheetSuffix(dateStr),
+      summary_sheet: summarySheet,
+    });
+  } catch (error) {
+    console.error('Balance GET error:', error);
+    return res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+// POST — read or set balance
 app.post('/api/finance/balance', async (req, res) => {
   try {
     const month = unwrap(req.body.month); // "MM/YYYY" or a date string
