@@ -2,7 +2,6 @@ require('dotenv').config();
 const express = require('express');
 const cors = require('cors');
 const { google } = require('googleapis');
-const crypto = require('crypto');
 
 const app = express();
 
@@ -11,16 +10,74 @@ app.use(express.json());
 
 const SPREADSHEET_ID = process.env.GOOGLE_SPREADSHEET_ID;
 
-const TRANSACTIONS_SHEET = 'Transactions';
-const BUDGETS_SHEET = 'Budgets';
+// ---------------------------------------------------------
+// Template Sheet Names (base — never written to directly)
+// ---------------------------------------------------------
 
-const TRANSACTIONS_HEADERS = ['id', 'date', 'type', 'category', 'amount', 'description', 'created', 'updated'];
-const BUDGETS_HEADERS = ['id', 'title', 'linked_category', 'amount', 'period_start', 'period_end', 'created', 'updated'];
+const BASE_SUMMARY = 'Summary';
+const BASE_TRANSACTIONS = 'Transactions';
 
-const VALID_CATEGORIES = [
-  'Makanan', 'Transport', 'Belanja', 'Hiburan', 'Kesehatan', 'Tagihan', 'Pendidikan',
-  'Gaji', 'Freelance', 'Investasi', 'Hadiah', 'Lainnya'
+// ---------------------------------------------------------
+// Transactions Sheet Layout
+// ---------------------------------------------------------
+// Expenses side: cols A–D,  row 3 = header, data from row 4+
+// Income   side: cols F–I,  row 3 = header, data from row 4+
+//
+//   A=Date  B=Amount  C=Description  D=Category   (Expenses)
+//   F=Date  G=Amount  H=Description  I=Category   (Income)
+
+const TX_HEADER_ROW = 3;
+const TX_DATA_START_ROW = 4;
+
+const TX_COLS = {
+  expense: { date: 'A', amount: 'B', description: 'C', category: 'D', first: 'A', last: 'D' },
+  income:  { date: 'F', amount: 'G', description: 'H', category: 'I', first: 'F', last: 'I' },
+};
+
+// ---------------------------------------------------------
+// Summary Sheet Layout — Category Cell Map
+// ---------------------------------------------------------
+// Starting balance: L8
+//
+// Expenses table: rows 24–37, cols B (name), C (planned), D (actual), E (diff)
+// Income   table: rows 24–29, cols H (name), I (planned), J (actual), K (diff)
+
+const STARTING_BALANCE_CELL = 'L8';
+
+const EXPENSE_CATEGORIES = [
+  { name: 'Food',              row: 24, plannedCell: 'C24', actualCell: 'D24', diffCell: 'E24' },
+  { name: 'Gifts',             row: 25, plannedCell: 'C25', actualCell: 'D25', diffCell: 'E25' },
+  { name: 'Health/medical',    row: 26, plannedCell: 'C26', actualCell: 'D26', diffCell: 'E26' },
+  { name: 'Home',              row: 27, plannedCell: 'C27', actualCell: 'D27', diffCell: 'E27' },
+  { name: 'Transportation',    row: 28, plannedCell: 'C28', actualCell: 'D28', diffCell: 'E28' },
+  { name: 'Personal',          row: 29, plannedCell: 'C29', actualCell: 'D29', diffCell: 'E29' },
+  { name: 'Pets',              row: 30, plannedCell: 'C30', actualCell: 'D30', diffCell: 'E30' },
+  { name: 'Utilities',         row: 31, plannedCell: 'C31', actualCell: 'D31', diffCell: 'E31' },
+  { name: 'Travel',            row: 32, plannedCell: 'C32', actualCell: 'D32', diffCell: 'E32' },
+  { name: 'Debt',              row: 33, plannedCell: 'C33', actualCell: 'D33', diffCell: 'E33' },
+  { name: 'Other',             row: 34, plannedCell: 'C34', actualCell: 'D34', diffCell: 'E34' },
+  { name: 'Custom category 1', row: 35, plannedCell: 'C35', actualCell: 'D35', diffCell: 'E35' },
+  { name: 'Custom category 2', row: 36, plannedCell: 'C36', actualCell: 'D36', diffCell: 'E36' },
+  { name: 'Custom category 3', row: 37, plannedCell: 'C37', actualCell: 'D37', diffCell: 'E37' },
 ];
+
+const INCOME_CATEGORIES = [
+  { name: 'Savings',           row: 24, plannedCell: 'I24', actualCell: 'J24', diffCell: 'K24' },
+  { name: 'Paycheck',          row: 25, plannedCell: 'I25', actualCell: 'J25', diffCell: 'K25' },
+  { name: 'Bonus',             row: 26, plannedCell: 'I26', actualCell: 'J26', diffCell: 'K26' },
+  { name: 'Interest',          row: 27, plannedCell: 'I27', actualCell: 'J27', diffCell: 'K27' },
+  { name: 'Other',             row: 28, plannedCell: 'I28', actualCell: 'J28', diffCell: 'K28' },
+  { name: 'Custom category',   row: 29, plannedCell: 'I29', actualCell: 'J29', diffCell: 'K29' },
+];
+
+// Summary totals cells
+const SUMMARY_CELLS = {
+  expensesPlannedTotal: 'C22',
+  expensesActualTotal:  'D22',
+  incomePlannedTotal:   'I22',
+  incomeActualTotal:    'J22',
+  startBalance:         'L8',
+};
 
 // ---------------------------------------------------------
 // Helper Functions
@@ -32,8 +89,8 @@ function unwrap(value) {
   if (typeof value === 'string' && value.trim().startsWith('[')) {
     try {
       const parsed = JSON.parse(value);
-      return Array.isArray(parsed) 
-        ? (parsed.length > 0 ? String(parsed[0]) : undefined) 
+      return Array.isArray(parsed)
+        ? (parsed.length > 0 ? String(parsed[0]) : undefined)
         : value;
     } catch {
       return value;
@@ -55,10 +112,6 @@ function isEmpty(value) {
   );
 }
 
-function generateId() {
-  return crypto.randomUUID().replace(/-/g, '').slice(0, 20);
-}
-
 function nowISO() {
   return new Date().toISOString();
 }
@@ -77,112 +130,376 @@ function getSheetsClient() {
   return google.sheets({ version: 'v4', auth: getSheetsAuth() });
 }
 
-function resolveCategory(value) {
+// ---------------------------------------------------------
+// Sheet Naming Helpers
+// ---------------------------------------------------------
+
+/**
+ * Returns "MM/YYYY" from a date string (e.g. "2026-07-15" → "07/2026")
+ */
+function sheetSuffix(dateStr) {
+  const d = new Date(dateStr);
+  if (isNaN(d.getTime())) {
+    // Try today as fallback
+    const now = new Date();
+    const mm = String(now.getMonth() + 1).padStart(2, '0');
+    return `${mm}/${now.getFullYear()}`;
+  }
+  const mm = String(d.getMonth() + 1).padStart(2, '0');
+  return `${mm}/${d.getFullYear()}`;
+}
+
+function transactionsSheetName(dateStr) {
+  return `Transactions ${sheetSuffix(dateStr)}`;
+}
+
+function summarySheetName(dateStr) {
+  return `Summary ${sheetSuffix(dateStr)}`;
+}
+
+// ---------------------------------------------------------
+// Category Resolution
+// ---------------------------------------------------------
+
+function resolveCategory(value, type) {
   if (isEmpty(value)) return null;
-  const found = VALID_CATEGORIES.find((c) => c.toLowerCase() === String(value).toLowerCase());
-  return found || null;
+  const categories = type === 'income' ? INCOME_CATEGORIES : EXPENSE_CATEGORIES;
+  const found = categories.find((c) => c.name.toLowerCase() === String(value).toLowerCase());
+  return found ? found.name : null;
+}
+
+function getCategoryInfo(categoryName, type) {
+  const categories = type === 'income' ? INCOME_CATEGORIES : EXPENSE_CATEGORIES;
+  return categories.find((c) => c.name.toLowerCase() === String(categoryName).toLowerCase()) || null;
 }
 
 // ---------------------------------------------------------
 // Generic Sheet Helpers
 // ---------------------------------------------------------
 
-async function getSheetGid(sheets, sheetName) {
+async function listAllSheets(sheets) {
   const meta = await sheets.spreadsheets.get({ spreadsheetId: SPREADSHEET_ID });
-  const sheet = meta.data.sheets.find((s) => s.properties.title === sheetName);
+  return meta.data.sheets.map((s) => ({
+    title: s.properties.title,
+    sheetId: s.properties.sheetId,
+  }));
+}
+
+async function getSheetGid(sheets, sheetName) {
+  const allSheets = await listAllSheets(sheets);
+  const sheet = allSheets.find((s) => s.title === sheetName);
   if (!sheet) throw new Error(`Sheet "${sheetName}" not found`);
-  return sheet.properties.sheetId;
+  return sheet.sheetId;
 }
 
-async function readSheetRows(sheets, sheetName, headers) {
-  const lastCol = String.fromCharCode(64 + headers.length);
-  const range = `${sheetName}!A2:${lastCol}`;
-  const res = await sheets.spreadsheets.values.get({
+async function cloneSheet(sheets, sourceTitle, newTitle) {
+  const allSheets = await listAllSheets(sheets);
+  const source = allSheets.find((s) => s.title === sourceTitle);
+  if (!source) throw new Error(`Source sheet "${sourceTitle}" not found for cloning`);
+
+  // Duplicate the sheet
+  const dupRes = await sheets.spreadsheets.sheets.copyTo({
     spreadsheetId: SPREADSHEET_ID,
-    range,
+    sheetId: source.sheetId,
+    requestBody: { destinationSpreadsheetId: SPREADSHEET_ID },
   });
-  const rows = res.data.values || [];
-  return rows
-    .map((row, idx) => {
-      const obj = { rowIndex: idx + 2 };
-      headers.forEach((h, i) => {
-        obj[h] = row[i] !== undefined ? row[i] : '';
-      });
-      return obj;
-    })
-    .filter((obj) => !isEmpty(obj.id));
-}
 
-async function appendRow(sheets, sheetName, headers, rowObject) {
-  const rowArray = headers.map((h) =>
-    rowObject[h] !== undefined && rowObject[h] !== null ? String(rowObject[h]) : ''
-  );
-  const lastCol = String.fromCharCode(64 + headers.length);
-  await sheets.spreadsheets.values.append({
-    spreadsheetId: SPREADSHEET_ID,
-    range: `${sheetName}!A:${lastCol}`,
-    valueInputOption: 'USER_ENTERED',
-    insertDataOption: 'INSERT_ROWS',
-    requestBody: { values: [rowArray] },
-  });
-}
+  const newSheetId = dupRes.data.sheetId;
 
-async function updateRowByIndex(sheets, sheetName, headers, rowIndex, rowObject) {
-  const rowArray = headers.map((h) =>
-    rowObject[h] !== undefined && rowObject[h] !== null ? String(rowObject[h]) : ''
-  );
-  const lastCol = String.fromCharCode(64 + headers.length);
-  await sheets.spreadsheets.values.update({
-    spreadsheetId: SPREADSHEET_ID,
-    range: `${sheetName}!A${rowIndex}:${lastCol}${rowIndex}`,
-    valueInputOption: 'USER_ENTERED',
-    requestBody: { values: [rowArray] },
-  });
-}
-
-async function deleteRowByIndex(sheets, sheetName, rowIndex) {
-  const sheetId = await getSheetGid(sheets, sheetName);
+  // Rename the duplicate
   await sheets.spreadsheets.batchUpdate({
     spreadsheetId: SPREADSHEET_ID,
     requestBody: {
       requests: [
         {
-          deleteDimension: {
-            range: {
-              sheetId,
-              dimension: 'ROWS',
-              startIndex: rowIndex - 1,
-              endIndex: rowIndex,
-            },
+          updateSheetProperties: {
+            properties: { sheetId: newSheetId, title: newTitle },
+            fields: 'title',
           },
         },
       ],
     },
   });
+
+  return newSheetId;
+}
+
+/**
+ * Ensures both Transactions MM/YYYY and Summary MM/YYYY exist.
+ * If either is missing, clones from the base template.
+ */
+async function ensureMonthlySheets(sheets, dateStr) {
+  const txName = transactionsSheetName(dateStr);
+  const sumName = summarySheetName(dateStr);
+
+  const allSheets = await listAllSheets(sheets);
+  const titles = allSheets.map((s) => s.title);
+
+  const txExists = titles.includes(txName);
+  const sumExists = titles.includes(sumName);
+
+  if (!txExists) {
+    await cloneSheet(sheets, BASE_TRANSACTIONS, txName);
+  }
+  if (!sumExists) {
+    await cloneSheet(sheets, BASE_SUMMARY, sumName);
+  }
+
+  return { transactionsSheet: txName, summarySheet: sumName, created: !txExists || !sumExists };
 }
 
 // ---------------------------------------------------------
-// Balance / Budget Guard Helpers
+// Transactions Sheet Helpers
 // ---------------------------------------------------------
 
-async function computeCurrentBalance(sheets) {
-  const rows = await readSheetRows(sheets, TRANSACTIONS_SHEET, TRANSACTIONS_HEADERS);
-  const income = rows.filter((r) => r.type === 'income').reduce((sum, r) => sum + (parseFloat(r.amount) || 0), 0);
-  const expense = rows.filter((r) => r.type === 'expense').reduce((sum, r) => sum + (parseFloat(r.amount) || 0), 0);
-  return { income, expense, balance: income - expense, allTransactionRows: rows };
+/**
+ * Read all data rows from one side (expense or income) of Transactions sheet.
+ * Returns array of { rowIndex, date, amount, description, category }
+ */
+async function readTransactionRows(sheets, sheetName, side) {
+  const cols = TX_COLS[side];
+  if (!cols) throw new Error(`Invalid side "${side}" — must be "expense" or "income"`);
+
+  const range = `'${sheetName}'!${cols.first}${TX_DATA_START_ROW}:${cols.last}`;
+  const res = await sheets.spreadsheets.values.get({
+    spreadsheetId: SPREADSHEET_ID,
+    range,
+  });
+
+  const rows = res.data.values || [];
+  return rows
+    .map((row, idx) => ({
+      rowIndex: TX_DATA_START_ROW + idx,
+      date: row[0] || '',
+      amount: row[1] || '',
+      description: row[2] || '',
+      category: row[3] || '',
+      type: side,
+    }))
+    .filter((r) => !isEmpty(r.date) || !isEmpty(r.amount) || !isEmpty(r.description));
 }
 
-function findActiveBudgetForCategory(budgetRows, category, transactionDate) {
-  const candidates = budgetRows.filter(
-    (b) =>
-      !isEmpty(b.linked_category) &&
-      b.linked_category.toLowerCase() === String(category).toLowerCase() &&
-      b.period_start <= transactionDate &&
-      b.period_end >= transactionDate
-  );
-  if (candidates.length === 0) return null;
-  candidates.sort((a, b) => new Date(b.created).getTime() - new Date(a.created).getTime());
-  return candidates[0];
+/**
+ * Append a new transaction row to the first empty row on the correct side.
+ */
+async function appendTransactionRow(sheets, sheetName, side, data) {
+  const cols = TX_COLS[side];
+
+  // Find existing rows to determine the next empty row
+  const existingRows = await readTransactionRows(sheets, sheetName, side);
+  const nextRow = existingRows.length > 0
+    ? Math.max(...existingRows.map((r) => r.rowIndex)) + 1
+    : TX_DATA_START_ROW;
+
+  const range = `'${sheetName}'!${cols.first}${nextRow}:${cols.last}${nextRow}`;
+  const values = [[data.date || '', data.amount || '', data.description || '', data.category || '']];
+
+  await sheets.spreadsheets.values.update({
+    spreadsheetId: SPREADSHEET_ID,
+    range,
+    valueInputOption: 'USER_ENTERED',
+    requestBody: { values },
+  });
+
+  return nextRow;
+}
+
+/**
+ * Update a specific row on the correct side.
+ */
+async function updateTransactionRow(sheets, sheetName, side, rowIndex, data) {
+  const cols = TX_COLS[side];
+  const range = `'${sheetName}'!${cols.first}${rowIndex}:${cols.last}${rowIndex}`;
+  const values = [[data.date || '', data.amount || '', data.description || '', data.category || '']];
+
+  await sheets.spreadsheets.values.update({
+    spreadsheetId: SPREADSHEET_ID,
+    range,
+    valueInputOption: 'USER_ENTERED',
+    requestBody: { values },
+  });
+}
+
+/**
+ * Clear a specific row on the correct side (delete data without shifting rows
+ * to avoid breaking formulas that reference specific row ranges).
+ */
+async function deleteTransactionRow(sheets, sheetName, side, rowIndex) {
+  const cols = TX_COLS[side];
+  const range = `'${sheetName}'!${cols.first}${rowIndex}:${cols.last}${rowIndex}`;
+
+  await sheets.spreadsheets.values.clear({
+    spreadsheetId: SPREADSHEET_ID,
+    range,
+  });
+}
+
+// ---------------------------------------------------------
+// Summary Sheet Helpers
+// ---------------------------------------------------------
+
+async function readSummaryCellValue(sheets, sheetName, cell) {
+  const range = `'${sheetName}'!${cell}`;
+  const res = await sheets.spreadsheets.values.get({
+    spreadsheetId: SPREADSHEET_ID,
+    range,
+  });
+  const values = res.data.values;
+  if (!values || values.length === 0 || values[0].length === 0) return null;
+  return values[0][0];
+}
+
+async function writeSummaryCellValue(sheets, sheetName, cell, value) {
+  const range = `'${sheetName}'!${cell}`;
+  await sheets.spreadsheets.values.update({
+    spreadsheetId: SPREADSHEET_ID,
+    range,
+    valueInputOption: 'USER_ENTERED',
+    requestBody: { values: [[value]] },
+  });
+}
+
+/**
+ * Read multiple cells in a batch from the Summary sheet.
+ */
+async function readSummaryMultipleCells(sheets, sheetName, cells) {
+  const ranges = cells.map((c) => `'${sheetName}'!${c}`);
+  const res = await sheets.spreadsheets.values.batchGet({
+    spreadsheetId: SPREADSHEET_ID,
+    ranges,
+  });
+  const result = {};
+  (res.data.valueRanges || []).forEach((vr, idx) => {
+    const val = vr.values && vr.values[0] && vr.values[0][0];
+    result[cells[idx]] = val || null;
+  });
+  return result;
+}
+
+// ---------------------------------------------------------
+// Content-Based Transaction Matching
+// ---------------------------------------------------------
+
+function matchesTransaction(row, criteria) {
+  let ok = true;
+
+  if (!isEmpty(criteria.search_keyword)) {
+    const desc = (row.description || '').toLowerCase();
+    ok = ok && desc.includes(String(criteria.search_keyword).toLowerCase());
+  }
+
+  if (!isEmpty(criteria.search_date)) {
+    ok = ok && row.date === criteria.search_date;
+  }
+
+  if (!isEmpty(criteria.search_category)) {
+    ok = ok && (row.category || '').toLowerCase() === String(criteria.search_category).toLowerCase();
+  }
+
+  if (!isEmpty(criteria.search_amount)) {
+    const searchAmt = parseFloat(criteria.search_amount);
+    const rowAmt = parseFloat(row.amount);
+    if (!isNaN(searchAmt) && !isNaN(rowAmt)) {
+      ok = ok && Math.abs(rowAmt - searchAmt) < 0.01;
+    }
+  }
+
+  return ok;
+}
+
+function mapTransactionToOutput(row) {
+  return {
+    row_index: row.rowIndex,
+    date: row.date,
+    amount: parseFloat(row.amount) || 0,
+    description: row.description,
+    category: row.category,
+    type: row.type,
+  };
+}
+
+// ---------------------------------------------------------
+// Content-Based Budget Matching
+// ---------------------------------------------------------
+
+function matchesBudget(categoryEntry, criteria) {
+  let ok = true;
+
+  if (!isEmpty(criteria.search_keyword)) {
+    const name = (categoryEntry.name || '').toLowerCase();
+    ok = ok && name.includes(String(criteria.search_keyword).toLowerCase());
+  }
+
+  return ok;
+}
+
+// ---------------------------------------------------------
+// Balance Endpoint
+// ---------------------------------------------------------
+
+app.post('/api/finance/balance', async (req, res) => {
+  try {
+    const month = unwrap(req.body.month); // "MM/YYYY" or a date string
+    const newBalance = unwrap(req.body.starting_balance);
+
+    // Determine the target month
+    const dateStr = resolveMonthToDate(month);
+    const sheets = getSheetsClient();
+
+    // Ensure monthly sheets exist
+    const { summarySheet } = await ensureMonthlySheets(sheets, dateStr);
+
+    if (!isEmpty(newBalance)) {
+      // SET starting balance
+      const amountNum = parseFloat(newBalance);
+      if (isNaN(amountNum)) {
+        return res.status(400).json({ success: false, error: 'Invalid starting_balance value' });
+      }
+      await writeSummaryCellValue(sheets, summarySheet, STARTING_BALANCE_CELL, amountNum);
+
+      return res.json({
+        success: true,
+        action: 'set',
+        starting_balance: amountNum,
+        month: sheetSuffix(dateStr),
+        summary_sheet: summarySheet,
+      });
+    }
+
+    // GET starting balance
+    const currentBalance = await readSummaryCellValue(sheets, summarySheet, STARTING_BALANCE_CELL);
+    const parsed = parseFloat(String(currentBalance).replace(/[^0-9.\-]/g, ''));
+
+    return res.json({
+      success: true,
+      action: 'get',
+      starting_balance: isNaN(parsed) ? null : parsed,
+      starting_balance_raw: currentBalance,
+      month: sheetSuffix(dateStr),
+      summary_sheet: summarySheet,
+    });
+  } catch (error) {
+    console.error('Balance error:', error);
+    return res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+/**
+ * Resolve a month input to a date string that sheetSuffix can parse.
+ * Accepts: "MM/YYYY", "YYYY-MM-DD", or null (defaults to current month).
+ */
+function resolveMonthToDate(monthInput) {
+  if (isEmpty(monthInput)) {
+    return nowISO().slice(0, 10);
+  }
+  const str = String(monthInput).trim();
+  // If "MM/YYYY" format
+  const mmYYYY = str.match(/^(\d{2})\/(\d{4})$/);
+  if (mmYYYY) {
+    return `${mmYYYY[2]}-${mmYYYY[1]}-01`;
+  }
+  // Otherwise treat as a date string
+  return str;
 }
 
 // ---------------------------------------------------------
@@ -211,255 +528,152 @@ app.post('/api/finance/create-transaction', async (req, res) => {
       return res.status(400).json({ success: false, error_code: 'invalid_amount', error: 'Invalid amount' });
     }
 
-    const finalCategory = isEmpty(cleanCategory) ? 'Lainnya' : cleanCategory;
+    // Resolve category against the fixed list
+    const defaultCategory = typeLower === 'income' ? 'Other' : 'Other';
+    let finalCategory;
+    if (isEmpty(cleanCategory)) {
+      finalCategory = defaultCategory;
+    } else {
+      const resolved = resolveCategory(cleanCategory, typeLower);
+      if (!resolved) {
+        const validList = (typeLower === 'income' ? INCOME_CATEGORIES : EXPENSE_CATEGORIES).map((c) => c.name);
+        return res.status(400).json({
+          success: false,
+          error_code: 'invalid_category',
+          error: `Invalid category for ${typeLower}. Must be one of: ${validList.join(', ')}`,
+        });
+      }
+      finalCategory = resolved;
+    }
+
     const finalDescription = isEmpty(cleanDescription) ? '' : cleanDescription;
 
     const sheets = getSheetsClient();
 
-    // ---------------------------------------------------------
-    // GUARD 1 — Balance check (only applies to expenses)
-    // Prevents logging an expense that would push the all-time balance negative.
-    // ---------------------------------------------------------
-    let currentBalanceInfo = null;
-    if (typeLower === 'expense') {
-      currentBalanceInfo = await computeCurrentBalance(sheets);
-      const projectedBalance = currentBalanceInfo.balance - amountNum;
+    // Ensure monthly sheets exist
+    await ensureMonthlySheets(sheets, cleanDate);
+    const txSheet = transactionsSheetName(cleanDate);
 
-      if (projectedBalance < 0) {
-        return res.status(409).json({
-          success: false,
-          error_code: 'insufficient_balance',
-          error: 'This expense would exceed your available balance',
-          current_balance: currentBalanceInfo.balance,
-          attempted_amount: amountNum,
-          projected_balance: projectedBalance,
-        });
-      }
-    }
-
-    // ---------------------------------------------------------
-    // GUARD 2 — Budget check (only applies to expenses matching an active, category-linked budget)
-    // General/unlinked budgets are NOT checked here — only exact category matches.
-    // ---------------------------------------------------------
-    let matchedBudget = null;
-    let budgetSpentBefore = 0;
-    if (typeLower === 'expense') {
-      const budgetRows = await readSheetRows(sheets, BUDGETS_SHEET, BUDGETS_HEADERS);
-      matchedBudget = findActiveBudgetForCategory(budgetRows, finalCategory, cleanDate);
-
-      if (matchedBudget) {
-        const txRows = currentBalanceInfo
-          ? currentBalanceInfo.allTransactionRows
-          : await readSheetRows(sheets, TRANSACTIONS_SHEET, TRANSACTIONS_HEADERS);
-
-        budgetSpentBefore = txRows
-          .filter(
-            (t) =>
-              t.type === 'expense' &&
-              t.category.toLowerCase() === matchedBudget.linked_category.toLowerCase() &&
-              t.date >= matchedBudget.period_start &&
-              t.date <= matchedBudget.period_end
-          )
-          .reduce((sum, t) => sum + (parseFloat(t.amount) || 0), 0);
-
-        const budgetAmount = parseFloat(matchedBudget.amount) || 0;
-        const projectedSpent = budgetSpentBefore + amountNum;
-
-        if (projectedSpent > budgetAmount) {
-          return res.status(409).json({
-            success: false,
-            error_code: 'budget_exceeded',
-            error: `This expense would exceed your "${matchedBudget.title}" budget`,
-            budget_title: matchedBudget.title,
-            budget_linked_category: matchedBudget.linked_category,
-            budget_amount: budgetAmount,
-            spent_before: budgetSpentBefore,
-            attempted_amount: amountNum,
-            would_exceed_by: projectedSpent - budgetAmount,
-          });
-        }
-      }
-    }
-
-    const id = generateId();
-    const timestamp = nowISO();
-
-    const rowObject = {
-      id,
+    // Append the row
+    const rowIndex = await appendTransactionRow(sheets, txSheet, typeLower, {
       date: cleanDate,
-      type: typeLower,
-      category: finalCategory,
       amount: amountNum,
       description: finalDescription,
-      created: timestamp,
-      updated: timestamp,
-    };
+      category: finalCategory,
+    });
 
-    await appendRow(sheets, TRANSACTIONS_SHEET, TRANSACTIONS_HEADERS, rowObject);
-
-    const response = {
+    return res.json({
       success: true,
-      transaction: rowObject,
-    };
-
-    if (typeLower === 'expense') {
-      response.balance_after = currentBalanceInfo ? currentBalanceInfo.balance - amountNum : undefined;
-
-      if (matchedBudget) {
-        const budgetAmount = parseFloat(matchedBudget.amount) || 0;
-        response.budget_context = {
-          budget_title: matchedBudget.title,
-          budget_linked_category: matchedBudget.linked_category,
-          budget_amount: budgetAmount,
-          spent_after: budgetSpentBefore + amountNum,
-          remaining_after: budgetAmount - (budgetSpentBefore + amountNum),
-        };
-      }
-    }
-
-    return res.json(response);
+      transaction: {
+        row_index: rowIndex,
+        date: cleanDate,
+        type: typeLower,
+        category: finalCategory,
+        amount: amountNum,
+        description: finalDescription,
+      },
+      sheet: txSheet,
+    });
   } catch (error) {
     console.error('Create transaction error:', error);
     return res.status(500).json({ success: false, error_code: 'server_error', error: error.message });
   }
 });
 
+// ---------------------------------------------------------
+// Edit Transaction (by row reference from a previous list/search)
+// ---------------------------------------------------------
+
 app.post('/api/finance/edit-transaction', async (req, res) => {
   try {
-    const id = unwrap(req.body.id) || 
-               unwrap(req.body.tx_transaction_id) || 
-               (req.body.node_output ? (unwrap(req.body.node_output.id) || unwrap(req.body.node_output.tx_transaction_id)) : undefined);
+    const rowIndexRaw = unwrap(req.body.row_index);
+    const type = unwrap(req.body.type);       // "expense" or "income" — which side
+    const month = unwrap(req.body.month);      // "MM/YYYY" or date string
+
     const newDate = unwrap(req.body.new_date);
-    const newType = unwrap(req.body.new_type);
-    const newCategory = unwrap(req.body.new_category);
     const newAmountRaw = unwrap(req.body.new_amount);
     const newDescription = unwrap(req.body.new_description);
+    const newCategory = unwrap(req.body.new_category);
 
-    if (isEmpty(id)) {
-      return res.status(400).json({ success: false, error_code: 'missing_id', error: 'Missing or invalid transaction id' });
+    if (isEmpty(rowIndexRaw) || isEmpty(type) || isEmpty(month)) {
+      return res.status(400).json({ success: false, error_code: 'missing_fields', error: 'Missing row_index, type, or month' });
     }
 
-    if (isEmpty(newDate) && isEmpty(newType) && isEmpty(newCategory) && isEmpty(newAmountRaw) && isEmpty(newDescription)) {
+    const typeLower = String(type).toLowerCase();
+    if (!['income', 'expense'].includes(typeLower)) {
+      return res.status(400).json({ success: false, error_code: 'invalid_type', error: 'Invalid type — must be "income" or "expense"' });
+    }
+
+    if (isEmpty(newDate) && isEmpty(newAmountRaw) && isEmpty(newDescription) && isEmpty(newCategory)) {
       return res.status(400).json({ success: false, error_code: 'no_changes', error: 'No changes provided — nothing to update' });
     }
 
+    const rowIndex = parseInt(rowIndexRaw, 10);
+    if (isNaN(rowIndex) || rowIndex < TX_DATA_START_ROW) {
+      return res.status(400).json({ success: false, error_code: 'invalid_row', error: 'Invalid row_index' });
+    }
+
     const sheets = getSheetsClient();
-    const rows = await readSheetRows(sheets, TRANSACTIONS_SHEET, TRANSACTIONS_HEADERS);
-    const match = rows.find((r) => r.id === id);
+    const dateStr = resolveMonthToDate(month);
+    const txSheet = transactionsSheetName(dateStr);
 
-    if (!match) {
-      return res.status(404).json({ success: false, error_code: 'not_found', error: 'Transaction not found' });
+    // Read existing row
+    const allRows = await readTransactionRows(sheets, txSheet, typeLower);
+    const existing = allRows.find((r) => r.rowIndex === rowIndex);
+
+    if (!existing) {
+      return res.status(404).json({ success: false, error_code: 'not_found', error: 'Transaction not found at the specified row' });
     }
 
-    let resolvedNewType = match.type;
-    if (!isEmpty(newType)) {
-      const t = String(newType).toLowerCase();
-      if (!['income', 'expense'].includes(t)) {
-        return res.status(400).json({ success: false, error_code: 'invalid_type', error: 'Invalid type — must be "income" or "expense"' });
-      }
-      resolvedNewType = t;
-    }
+    // Merge changes
+    const updated = {
+      date: !isEmpty(newDate) ? newDate : existing.date,
+      amount: !isEmpty(newAmountRaw) ? parseFloat(newAmountRaw) : existing.amount,
+      description: !isEmpty(newDescription) ? newDescription : existing.description,
+      category: !isEmpty(newCategory) ? newCategory : existing.category,
+    };
 
-    let resolvedNewAmount = parseFloat(match.amount) || 0;
+    // Validate new amount
     if (!isEmpty(newAmountRaw)) {
       const amountNum = parseFloat(newAmountRaw);
       if (isNaN(amountNum) || amountNum <= 0) {
         return res.status(400).json({ success: false, error_code: 'invalid_amount', error: 'Invalid amount' });
       }
-      resolvedNewAmount = amountNum;
+      updated.amount = amountNum;
     }
 
-    const resolvedNewCategory = !isEmpty(newCategory) ? newCategory : match.category;
-    const resolvedNewDate = !isEmpty(newDate) ? newDate : match.date;
-
-    // ---------------------------------------------------------
-    // GUARD 1 — Balance check (only if the edited row IS or BECOMES an expense)
-    // Simulate balance EXCLUDING the old version of this row, then apply the new version.
-    // ---------------------------------------------------------
-    if (resolvedNewType === 'expense') {
-      const otherRows = rows.filter((r) => r.id !== id); // exclude the row being edited
-      const income = otherRows.filter((r) => r.type === 'income').reduce((sum, r) => sum + (parseFloat(r.amount) || 0), 0);
-      const expense = otherRows.filter((r) => r.type === 'expense').reduce((sum, r) => sum + (parseFloat(r.amount) || 0), 0);
-      const balanceWithoutThisRow = income - expense;
-      const projectedBalance = balanceWithoutThisRow - resolvedNewAmount;
-
-      if (projectedBalance < 0) {
-        return res.status(409).json({
+    // Validate new category
+    if (!isEmpty(newCategory)) {
+      const resolved = resolveCategory(newCategory, typeLower);
+      if (!resolved) {
+        const validList = (typeLower === 'income' ? INCOME_CATEGORIES : EXPENSE_CATEGORIES).map((c) => c.name);
+        return res.status(400).json({
           success: false,
-          error_code: 'insufficient_balance',
-          error: 'This change would exceed your available balance',
-          current_balance_excluding_this_transaction: balanceWithoutThisRow,
-          attempted_amount: resolvedNewAmount,
-          projected_balance: projectedBalance,
+          error_code: 'invalid_category',
+          error: `Invalid category for ${typeLower}. Must be one of: ${validList.join(', ')}`,
         });
       }
+      updated.category = resolved;
     }
 
-    // ---------------------------------------------------------
-    // GUARD 2 — Budget check (only if the edited row IS or BECOMES an expense,
-    // matching an active, category-linked budget for its NEW date/category)
-    // ---------------------------------------------------------
-    if (resolvedNewType === 'expense') {
-      const budgetRows = await readSheetRows(sheets, BUDGETS_SHEET, BUDGETS_HEADERS);
-      const matchedBudget = findActiveBudgetForCategory(budgetRows, resolvedNewCategory, resolvedNewDate);
+    await updateTransactionRow(sheets, txSheet, typeLower, rowIndex, updated);
 
-      if (matchedBudget) {
-        const otherRows = rows.filter((r) => r.id !== id); // exclude the row being edited
-        const spentExcludingThisRow = otherRows
-          .filter(
-            (t) =>
-              t.type === 'expense' &&
-              t.category.toLowerCase() === matchedBudget.linked_category.toLowerCase() &&
-              t.date >= matchedBudget.period_start &&
-              t.date <= matchedBudget.period_end
-          )
-          .reduce((sum, t) => sum + (parseFloat(t.amount) || 0), 0);
-
-        const budgetAmount = parseFloat(matchedBudget.amount) || 0;
-        const projectedSpent = spentExcludingThisRow + resolvedNewAmount;
-
-        if (projectedSpent > budgetAmount) {
-          return res.status(409).json({
-            success: false,
-            error_code: 'budget_exceeded',
-            error: `This change would exceed your "${matchedBudget.title}" budget`,
-            budget_title: matchedBudget.title,
-            budget_linked_category: matchedBudget.linked_category,
-            budget_amount: budgetAmount,
-            spent_excluding_this_transaction: spentExcludingThisRow,
-            attempted_amount: resolvedNewAmount,
-            would_exceed_by: projectedSpent - budgetAmount,
-          });
-        }
-      }
-    }
-
-    const updated = { ...match };
     const fieldsUpdated = [];
-
-    if (!isEmpty(newDate)) { updated.date = newDate; fieldsUpdated.push('date'); }
-    if (!isEmpty(newType)) { updated.type = resolvedNewType; fieldsUpdated.push('type'); }
-    if (!isEmpty(newCategory)) { updated.category = newCategory; fieldsUpdated.push('category'); }
-    if (!isEmpty(newAmountRaw)) { updated.amount = resolvedNewAmount; fieldsUpdated.push('amount'); }
-    if (!isEmpty(newDescription)) { updated.description = newDescription; fieldsUpdated.push('description'); }
-
-    updated.updated = nowISO();
-
-    await updateRowByIndex(sheets, TRANSACTIONS_SHEET, TRANSACTIONS_HEADERS, match.rowIndex, updated);
+    if (!isEmpty(newDate)) fieldsUpdated.push('date');
+    if (!isEmpty(newAmountRaw)) fieldsUpdated.push('amount');
+    if (!isEmpty(newDescription)) fieldsUpdated.push('description');
+    if (!isEmpty(newCategory)) fieldsUpdated.push('category');
 
     return res.json({
       success: true,
       transaction: {
-        id: updated.id,
-        date: updated.date,
-        type: updated.type,
-        category: updated.category,
-        amount: updated.amount,
-        description: updated.description,
-        created: updated.created,
-        updated: updated.updated,
+        row_index: rowIndex,
+        type: typeLower,
+        ...updated,
+        amount: parseFloat(updated.amount) || 0,
       },
       fields_updated: fieldsUpdated,
+      sheet: txSheet,
     });
   } catch (error) {
     console.error('Edit transaction error:', error);
@@ -467,71 +681,299 @@ app.post('/api/finance/edit-transaction', async (req, res) => {
   }
 });
 
-app.post('/api/finance/delete-transaction', async (req, res) => {
-  try {
-    const id = unwrap(req.body.id) || 
-               unwrap(req.body.tx_transaction_id) || 
-               (req.body.node_output ? (unwrap(req.body.node_output.id) || unwrap(req.body.node_output.tx_transaction_id)) : undefined);
+// ---------------------------------------------------------
+// Search Edit Transaction
+// ---------------------------------------------------------
 
-    if (isEmpty(id)) {
-      return res.status(400).json({ success: false, error: 'Missing or invalid transaction id' });
+app.post('/api/finance/search-edit-transaction', async (req, res) => {
+  try {
+    const searchKeyword = unwrap(req.body.search_keyword);
+    const searchDate = unwrap(req.body.search_date);
+    const searchCategory = unwrap(req.body.search_category);
+    const searchAmount = unwrap(req.body.search_amount);
+    const searchType = unwrap(req.body.search_type);  // "expense" or "income"
+    const month = unwrap(req.body.month);              // "MM/YYYY" or date string
+
+    const newDate = unwrap(req.body.new_date);
+    const newAmountRaw = unwrap(req.body.new_amount);
+    const newDescription = unwrap(req.body.new_description);
+    const newCategory = unwrap(req.body.new_category);
+
+    // Require at least one search criterion
+    if (isEmpty(searchKeyword) && isEmpty(searchDate) && isEmpty(searchCategory) && isEmpty(searchAmount)) {
+      return res.status(400).json({
+        success: false,
+        error: 'At least one search criterion (search_keyword, search_date, search_category, or search_amount) is required',
+      });
+    }
+
+    // Require at least one change
+    if (isEmpty(newDate) && isEmpty(newAmountRaw) && isEmpty(newDescription) && isEmpty(newCategory)) {
+      return res.status(400).json({ success: false, error: 'No changes provided — nothing to update' });
     }
 
     const sheets = getSheetsClient();
-    const rows = await readSheetRows(sheets, TRANSACTIONS_SHEET, TRANSACTIONS_HEADERS);
-    const match = rows.find((r) => r.id === id);
+    const dateStr = resolveMonthToDate(month || searchDate);
+    await ensureMonthlySheets(sheets, dateStr);
+    const txSheet = transactionsSheetName(dateStr);
 
-    if (!match) {
-      return res.status(404).json({ success: false, error: 'Transaction not found' });
+    // Determine which sides to search
+    const sides = isEmpty(searchType)
+      ? ['expense', 'income']
+      : [String(searchType).toLowerCase()];
+
+    const criteria = { search_keyword: searchKeyword, search_date: searchDate, search_category: searchCategory, search_amount: searchAmount };
+    let allMatches = [];
+
+    for (const side of sides) {
+      const rows = await readTransactionRows(sheets, txSheet, side);
+      const matches = rows.filter((r) => matchesTransaction(r, criteria));
+      allMatches = allMatches.concat(matches);
     }
 
-    await deleteRowByIndex(sheets, TRANSACTIONS_SHEET, match.rowIndex);
+    if (allMatches.length === 0) {
+      return res.json({ success: true, found: false, ambiguous: false, edited: false, candidates: [] });
+    }
 
-    return res.json({ success: true, deleted_id: id });
+    if (allMatches.length > 1) {
+      return res.json({
+        success: true,
+        found: false,
+        ambiguous: true,
+        edited: false,
+        candidates: allMatches.map(mapTransactionToOutput),
+      });
+    }
+
+    // Exactly one match — apply edits
+    const matched = allMatches[0];
+    const typeLower = matched.type;
+
+    const updated = {
+      date: !isEmpty(newDate) ? newDate : matched.date,
+      amount: !isEmpty(newAmountRaw) ? parseFloat(newAmountRaw) : matched.amount,
+      description: !isEmpty(newDescription) ? newDescription : matched.description,
+      category: !isEmpty(newCategory) ? newCategory : matched.category,
+    };
+
+    // Validate new category if provided
+    if (!isEmpty(newCategory)) {
+      const resolved = resolveCategory(newCategory, typeLower);
+      if (!resolved) {
+        const validList = (typeLower === 'income' ? INCOME_CATEGORIES : EXPENSE_CATEGORIES).map((c) => c.name);
+        return res.status(400).json({
+          success: false,
+          error_code: 'invalid_category',
+          error: `Invalid category for ${typeLower}. Must be one of: ${validList.join(', ')}`,
+        });
+      }
+      updated.category = resolved;
+    }
+
+    // Validate new amount if provided
+    if (!isEmpty(newAmountRaw)) {
+      const amountNum = parseFloat(newAmountRaw);
+      if (isNaN(amountNum) || amountNum <= 0) {
+        return res.status(400).json({ success: false, error_code: 'invalid_amount', error: 'Invalid amount' });
+      }
+      updated.amount = amountNum;
+    }
+
+    await updateTransactionRow(sheets, txSheet, typeLower, matched.rowIndex, updated);
+
+    const fieldsUpdated = [];
+    if (!isEmpty(newDate)) fieldsUpdated.push('date');
+    if (!isEmpty(newAmountRaw)) fieldsUpdated.push('amount');
+    if (!isEmpty(newDescription)) fieldsUpdated.push('description');
+    if (!isEmpty(newCategory)) fieldsUpdated.push('category');
+
+    return res.json({
+      success: true,
+      found: true,
+      ambiguous: false,
+      edited: true,
+      transaction: mapTransactionToOutput({ ...matched, ...updated, amount: parseFloat(updated.amount) || 0 }),
+      fields_updated: fieldsUpdated,
+      sheet: txSheet,
+    });
+  } catch (error) {
+    console.error('Search-edit transaction error:', error);
+    return res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+// ---------------------------------------------------------
+// Delete Transaction (by row reference)
+// ---------------------------------------------------------
+
+app.post('/api/finance/delete-transaction', async (req, res) => {
+  try {
+    const rowIndexRaw = unwrap(req.body.row_index);
+    const type = unwrap(req.body.type);
+    const month = unwrap(req.body.month);
+
+    if (isEmpty(rowIndexRaw) || isEmpty(type) || isEmpty(month)) {
+      return res.status(400).json({ success: false, error: 'Missing row_index, type, or month' });
+    }
+
+    const typeLower = String(type).toLowerCase();
+    if (!['income', 'expense'].includes(typeLower)) {
+      return res.status(400).json({ success: false, error: 'Invalid type — must be "income" or "expense"' });
+    }
+
+    const rowIndex = parseInt(rowIndexRaw, 10);
+    if (isNaN(rowIndex) || rowIndex < TX_DATA_START_ROW) {
+      return res.status(400).json({ success: false, error: 'Invalid row_index' });
+    }
+
+    const sheets = getSheetsClient();
+    const dateStr = resolveMonthToDate(month);
+    const txSheet = transactionsSheetName(dateStr);
+
+    // Read existing to return what was deleted
+    const allRows = await readTransactionRows(sheets, txSheet, typeLower);
+    const existing = allRows.find((r) => r.rowIndex === rowIndex);
+
+    if (!existing) {
+      return res.status(404).json({ success: false, error: 'Transaction not found at the specified row' });
+    }
+
+    await deleteTransactionRow(sheets, txSheet, typeLower, rowIndex);
+
+    return res.json({
+      success: true,
+      deleted: true,
+      transaction: mapTransactionToOutput(existing),
+      sheet: txSheet,
+    });
   } catch (error) {
     console.error('Delete transaction error:', error);
     return res.status(500).json({ success: false, error: error.message });
   }
 });
 
+// ---------------------------------------------------------
+// Search Delete Transaction
+// ---------------------------------------------------------
+
+app.post('/api/finance/search-delete-transaction', async (req, res) => {
+  try {
+    const searchKeyword = unwrap(req.body.search_keyword);
+    const searchDate = unwrap(req.body.search_date);
+    const searchCategory = unwrap(req.body.search_category);
+    const searchAmount = unwrap(req.body.search_amount);
+    const searchType = unwrap(req.body.search_type);
+    const month = unwrap(req.body.month);
+
+    if (isEmpty(searchKeyword) && isEmpty(searchDate) && isEmpty(searchCategory) && isEmpty(searchAmount)) {
+      return res.status(400).json({
+        success: false,
+        error: 'At least one search criterion (search_keyword, search_date, search_category, or search_amount) is required',
+      });
+    }
+
+    const sheets = getSheetsClient();
+    const dateStr = resolveMonthToDate(month || searchDate);
+    await ensureMonthlySheets(sheets, dateStr);
+    const txSheet = transactionsSheetName(dateStr);
+
+    const sides = isEmpty(searchType)
+      ? ['expense', 'income']
+      : [String(searchType).toLowerCase()];
+
+    const criteria = { search_keyword: searchKeyword, search_date: searchDate, search_category: searchCategory, search_amount: searchAmount };
+    let allMatches = [];
+
+    for (const side of sides) {
+      const rows = await readTransactionRows(sheets, txSheet, side);
+      const matches = rows.filter((r) => matchesTransaction(r, criteria));
+      allMatches = allMatches.concat(matches);
+    }
+
+    if (allMatches.length === 0) {
+      return res.json({ success: true, found: false, ambiguous: false, deleted: false, candidates: [] });
+    }
+
+    if (allMatches.length > 1) {
+      return res.json({
+        success: true,
+        found: false,
+        ambiguous: true,
+        deleted: false,
+        candidates: allMatches.map(mapTransactionToOutput),
+      });
+    }
+
+    const matched = allMatches[0];
+    await deleteTransactionRow(sheets, txSheet, matched.type, matched.rowIndex);
+
+    return res.json({
+      success: true,
+      found: true,
+      ambiguous: false,
+      deleted: true,
+      transaction: mapTransactionToOutput(matched),
+      sheet: txSheet,
+    });
+  } catch (error) {
+    console.error('Search-delete transaction error:', error);
+    return res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+// ---------------------------------------------------------
+// List Transactions
+// ---------------------------------------------------------
+
 app.post('/api/finance/list-transactions', async (req, res) => {
   try {
     const body = req.body || {};
-    const dateMin = unwrap(body.dateMin);
-    const dateMax = unwrap(body.dateMax);
-    const typeFilter = unwrap(body.type);
+    const month = unwrap(body.month);
+    const typeFilter = unwrap(body.type);         // "expense", "income", or null (both)
     const categoryFilter = unwrap(body.category);
     const keywordRaw = unwrap(body.keyword);
+    const dateMin = unwrap(body.dateMin);
+    const dateMax = unwrap(body.dateMax);
     const maxResultsRaw = unwrap(body.maxResults);
 
     const maxResults = isEmpty(maxResultsRaw) ? 50 : parseInt(String(maxResultsRaw), 10);
     const keyword = isEmpty(keywordRaw) ? null : String(keywordRaw).toLowerCase();
 
     const sheets = getSheetsClient();
-    let rows = await readSheetRows(sheets, TRANSACTIONS_SHEET, TRANSACTIONS_HEADERS);
+    const dateStr = resolveMonthToDate(month);
+    await ensureMonthlySheets(sheets, dateStr);
+    const txSheet = transactionsSheetName(dateStr);
 
-    if (!isEmpty(dateMin)) rows = rows.filter((r) => r.date >= dateMin);
-    if (!isEmpty(dateMax)) rows = rows.filter((r) => r.date <= dateMax);
-    if (!isEmpty(typeFilter)) rows = rows.filter((r) => r.type === String(typeFilter).toLowerCase());
-    if (!isEmpty(categoryFilter)) rows = rows.filter((r) => r.category.toLowerCase() === String(categoryFilter).toLowerCase());
-    if (keyword) rows = rows.filter((r) => r.description.toLowerCase().includes(keyword));
+    const sides = isEmpty(typeFilter)
+      ? ['expense', 'income']
+      : [String(typeFilter).toLowerCase()];
 
-    rows.sort((a, b) => (a.date < b.date ? 1 : a.date > b.date ? -1 : 0));
+    let allRows = [];
+    for (const side of sides) {
+      const rows = await readTransactionRows(sheets, txSheet, side);
+      allRows = allRows.concat(rows);
+    }
 
-    rows = rows.slice(0, isNaN(maxResults) ? 50 : maxResults);
+    // Apply filters
+    if (!isEmpty(dateMin)) allRows = allRows.filter((r) => r.date >= dateMin);
+    if (!isEmpty(dateMax)) allRows = allRows.filter((r) => r.date <= dateMax);
+    if (!isEmpty(categoryFilter)) allRows = allRows.filter((r) => (r.category || '').toLowerCase() === String(categoryFilter).toLowerCase());
+    if (keyword) allRows = allRows.filter((r) => (r.description || '').toLowerCase().includes(keyword));
 
-    const transactions = rows.map((r) => ({
-      id: r.id,
-      date: r.date,
-      type: r.type,
-      category: r.category,
-      amount: parseFloat(r.amount) || 0,
-      description: r.description,
-      created: r.created,
-      updated: r.updated,
-    }));
+    // Sort by date descending
+    allRows.sort((a, b) => (a.date < b.date ? 1 : a.date > b.date ? -1 : 0));
 
-    return res.json({ success: true, count: transactions.length, transactions });
+    allRows = allRows.slice(0, isNaN(maxResults) ? 50 : maxResults);
+
+    const transactions = allRows.map(mapTransactionToOutput);
+
+    return res.json({
+      success: true,
+      count: transactions.length,
+      month: sheetSuffix(dateStr),
+      sheet: txSheet,
+      transactions,
+    });
   } catch (error) {
     console.error('List transactions error:', error);
     return res.status(500).json({ success: false, error: error.message });
@@ -541,233 +983,346 @@ app.post('/api/finance/list-transactions', async (req, res) => {
 // ---------------------------------------------------------
 // Budget Routes
 // ---------------------------------------------------------
+// In the Monthly Budget template, "budgets" are the Planned
+// amounts on per-category rows in Summary MM/YYYY.
 
 app.post('/api/finance/set-budget', async (req, res) => {
   try {
-    const title = unwrap(req.body.title);
-    const linkedCategoryRaw = unwrap(req.body.linked_category);
-    const amountRaw = unwrap(req.body.amount);
-    const periodStart = unwrap(req.body.period_start);
-    const periodEnd = unwrap(req.body.period_end);
+    const month = unwrap(req.body.month);
+    const category = unwrap(req.body.category);
+    const type = unwrap(req.body.type);           // "expense" or "income"
+    const plannedAmountRaw = unwrap(req.body.planned_amount);
 
-    if (isEmpty(title) || isEmpty(amountRaw) || isEmpty(periodStart) || isEmpty(periodEnd)) {
-      return res.status(400).json({ success: false, error: 'Missing title, amount, period_start, or period_end' });
+    if (isEmpty(category) || isEmpty(plannedAmountRaw)) {
+      return res.status(400).json({ success: false, error: 'Missing category or planned_amount' });
     }
 
-    const resolvedCategory = resolveCategory(linkedCategoryRaw) || resolveCategory(title);
-    if (!resolvedCategory) {
+    const typeLower = isEmpty(type) ? 'expense' : String(type).toLowerCase();
+    if (!['income', 'expense'].includes(typeLower)) {
+      return res.status(400).json({ success: false, error: 'Invalid type — must be "income" or "expense"' });
+    }
+
+    const amountNum = parseFloat(plannedAmountRaw);
+    if (isNaN(amountNum) || amountNum < 0) {
+      return res.status(400).json({ success: false, error: 'Invalid planned_amount' });
+    }
+
+    const catInfo = getCategoryInfo(category, typeLower);
+    if (!catInfo) {
+      const validList = (typeLower === 'income' ? INCOME_CATEGORIES : EXPENSE_CATEGORIES).map((c) => c.name);
       return res.status(400).json({
         success: false,
-        error: `Missing or invalid linked_category. Must be one of: ${VALID_CATEGORIES.join(', ')}`,
+        error: `Invalid category for ${typeLower}. Must be one of: ${validList.join(', ')}`,
       });
-    }
-
-    const amountNum = parseFloat(amountRaw);
-    if (isNaN(amountNum) || amountNum <= 0) {
-      return res.status(400).json({ success: false, error: 'Invalid amount' });
     }
 
     const sheets = getSheetsClient();
-    const rows = await readSheetRows(sheets, BUDGETS_SHEET, BUDGETS_HEADERS);
+    const dateStr = resolveMonthToDate(month);
+    const { summarySheet } = await ensureMonthlySheets(sheets, dateStr);
 
-    const existing = rows.find((r) => {
-      if (r.title.toLowerCase() !== String(title).toLowerCase()) return false;
-      return r.period_start <= periodEnd && r.period_end >= periodStart;
+    await writeSummaryCellValue(sheets, summarySheet, catInfo.plannedCell, amountNum);
+
+    return res.json({
+      success: true,
+      action: 'set',
+      category: catInfo.name,
+      type: typeLower,
+      planned_amount: amountNum,
+      cell: catInfo.plannedCell,
+      month: sheetSuffix(dateStr),
+      sheet: summarySheet,
     });
-
-    const timestamp = nowISO();
-
-    if (existing) {
-      const updated = {
-        ...existing,
-        title,
-        linked_category: resolvedCategory,
-        amount: amountNum,
-        period_start: periodStart,
-        period_end: periodEnd,
-        updated: timestamp,
-      };
-      await updateRowByIndex(sheets, BUDGETS_SHEET, BUDGETS_HEADERS, existing.rowIndex, updated);
-
-      return res.json({
-        success: true,
-        action: 'updated',
-        budget: {
-          id: updated.id,
-          title: updated.title,
-          linked_category: updated.linked_category,
-          amount: updated.amount,
-          period_start: updated.period_start,
-          period_end: updated.period_end,
-          created: updated.created,
-          updated: updated.updated,
-        },
-      });
-    }
-
-    const id = generateId();
-    const rowObject = {
-      id,
-      title,
-      linked_category: resolvedCategory,
-      amount: amountNum,
-      period_start: periodStart,
-      period_end: periodEnd,
-      created: timestamp,
-      updated: timestamp,
-    };
-    await appendRow(sheets, BUDGETS_SHEET, BUDGETS_HEADERS, rowObject);
-
-    return res.json({ success: true, action: 'created', budget: rowObject });
   } catch (error) {
     console.error('Set budget error:', error);
     return res.status(500).json({ success: false, error: error.message });
   }
 });
 
+// edit-budget is an alias for set-budget
 app.post('/api/finance/edit-budget', async (req, res) => {
+  // Forward to set-budget handler
+  req.url = '/api/finance/set-budget';
+  app.handle(req, res);
+});
+
+// ---------------------------------------------------------
+// Search Edit Budget
+// ---------------------------------------------------------
+
+app.post('/api/finance/search-edit-budget', async (req, res) => {
   try {
-    const id = unwrap(req.body.id) ||
-               unwrap(req.body.budget_id) ||
-               (req.body.node_output ? (unwrap(req.body.node_output.id) || unwrap(req.body.node_output.budget_id)) : undefined);
-    const newTitle = unwrap(req.body.new_title);
-    const newLinkedCategoryRaw = unwrap(req.body.new_linked_category);
-    const newAmountRaw = unwrap(req.body.new_amount);
-    const newPeriodStart = unwrap(req.body.new_period_start);
-    const newPeriodEnd = unwrap(req.body.new_period_end);
+    const searchKeyword = unwrap(req.body.search_keyword);
+    const searchType = unwrap(req.body.search_type); // "expense" or "income"
+    const month = unwrap(req.body.month);
+    const newPlannedAmountRaw = unwrap(req.body.new_planned_amount);
 
-    if (isEmpty(id)) {
-      return res.status(400).json({ success: false, error: 'Missing or invalid budget id' });
+    if (isEmpty(searchKeyword)) {
+      return res.status(400).json({
+        success: false,
+        error: 'search_keyword is required to identify the budget category',
+      });
     }
 
-    if (isEmpty(newTitle) && isEmpty(newLinkedCategoryRaw) && isEmpty(newAmountRaw) && isEmpty(newPeriodStart) && isEmpty(newPeriodEnd)) {
-      return res.status(400).json({ success: false, error: 'No changes provided — nothing to update' });
+    if (isEmpty(newPlannedAmountRaw)) {
+      return res.status(400).json({ success: false, error: 'No changes provided — new_planned_amount is required' });
     }
 
+    const amountNum = parseFloat(newPlannedAmountRaw);
+    if (isNaN(amountNum) || amountNum < 0) {
+      return res.status(400).json({ success: false, error: 'Invalid new_planned_amount' });
+    }
+
+    const typeLower = isEmpty(searchType) ? null : String(searchType).toLowerCase();
+
+    // Determine which category lists to search
+    let categoriesToSearch = [];
+    if (typeLower === 'expense') {
+      categoriesToSearch = EXPENSE_CATEGORIES;
+    } else if (typeLower === 'income') {
+      categoriesToSearch = INCOME_CATEGORIES;
+    } else {
+      categoriesToSearch = [
+        ...EXPENSE_CATEGORIES.map((c) => ({ ...c, type: 'expense' })),
+        ...INCOME_CATEGORIES.map((c) => ({ ...c, type: 'income' })),
+      ];
+    }
+
+    // Add type info if not already present
+    if (typeLower) {
+      categoriesToSearch = categoriesToSearch.map((c) => ({ ...c, type: typeLower }));
+    }
+
+    const criteria = { search_keyword: searchKeyword };
+    const matches = categoriesToSearch.filter((c) => matchesBudget(c, criteria));
+
+    if (matches.length === 0) {
+      return res.json({ success: true, found: false, ambiguous: false, edited: false, candidates: [] });
+    }
+
+    if (matches.length > 1) {
+      return res.json({
+        success: true,
+        found: false,
+        ambiguous: true,
+        edited: false,
+        candidates: matches.map((c) => ({ category: c.name, type: c.type, planned_cell: c.plannedCell })),
+      });
+    }
+
+    const matched = matches[0];
     const sheets = getSheetsClient();
-    const rows = await readSheetRows(sheets, BUDGETS_SHEET, BUDGETS_HEADERS);
-    const match = rows.find((r) => r.id === id);
+    const dateStr = resolveMonthToDate(month);
+    const { summarySheet } = await ensureMonthlySheets(sheets, dateStr);
 
-    if (!match) {
-      return res.status(404).json({ success: false, error: 'Budget not found' });
-    }
-
-    const updated = { ...match };
-    const fieldsUpdated = [];
-
-    if (!isEmpty(newTitle)) {
-      updated.title = newTitle;
-      fieldsUpdated.push('title');
-    }
-
-    if (!isEmpty(newLinkedCategoryRaw)) {
-      const resolved = resolveCategory(newLinkedCategoryRaw);
-      if (!resolved) {
-        return res.status(400).json({
-          success: false,
-          error: `Invalid linked_category. Must be one of: ${VALID_CATEGORIES.join(', ')}`,
-        });
-      }
-      updated.linked_category = resolved;
-      fieldsUpdated.push('linked_category');
-    }
-
-    if (!isEmpty(newAmountRaw)) {
-      const amountNum = parseFloat(newAmountRaw);
-      if (isNaN(amountNum) || amountNum <= 0) {
-        return res.status(400).json({ success: false, error: 'Invalid amount' });
-      }
-      updated.amount = amountNum;
-      fieldsUpdated.push('amount');
-    }
-
-    if (!isEmpty(newPeriodStart)) {
-      updated.period_start = newPeriodStart;
-      fieldsUpdated.push('period_start');
-    }
-
-    if (!isEmpty(newPeriodEnd)) {
-      updated.period_end = newPeriodEnd;
-      fieldsUpdated.push('period_end');
-    }
-
-    updated.updated = nowISO();
-
-    await updateRowByIndex(sheets, BUDGETS_SHEET, BUDGETS_HEADERS, match.rowIndex, updated);
+    await writeSummaryCellValue(sheets, summarySheet, matched.plannedCell, amountNum);
 
     return res.json({
       success: true,
-      budget: {
-        id: updated.id,
-        title: updated.title,
-        linked_category: updated.linked_category,
-        amount: updated.amount,
-        period_start: updated.period_start,
-        period_end: updated.period_end,
-        created: updated.created,
-        updated: updated.updated,
-      },
-      fields_updated: fieldsUpdated,
+      found: true,
+      ambiguous: false,
+      edited: true,
+      category: matched.name,
+      type: matched.type,
+      new_planned_amount: amountNum,
+      cell: matched.plannedCell,
+      month: sheetSuffix(dateStr),
+      sheet: summarySheet,
     });
   } catch (error) {
-    console.error('Edit budget error:', error);
+    console.error('Search-edit budget error:', error);
     return res.status(500).json({ success: false, error: error.message });
   }
 });
 
+// ---------------------------------------------------------
+// Delete Budget (clear planned amount)
+// ---------------------------------------------------------
+
 app.post('/api/finance/delete-budget', async (req, res) => {
   try {
-    const id = unwrap(req.body.id) || 
-               unwrap(req.body.budget_id) || 
-               unwrap(req.body.tx_budget_id) || 
-               (req.body.node_output ? (unwrap(req.body.node_output.id) || unwrap(req.body.node_output.budget_id) || unwrap(req.body.node_output.tx_budget_id)) : undefined);
+    const month = unwrap(req.body.month);
+    const category = unwrap(req.body.category);
+    const type = unwrap(req.body.type);
 
-    if (isEmpty(id)) {
-      return res.status(400).json({ success: false, error: 'Missing or invalid budget id' });
+    if (isEmpty(category)) {
+      return res.status(400).json({ success: false, error: 'Missing category' });
+    }
+
+    const typeLower = isEmpty(type) ? 'expense' : String(type).toLowerCase();
+    const catInfo = getCategoryInfo(category, typeLower);
+    if (!catInfo) {
+      const validList = (typeLower === 'income' ? INCOME_CATEGORIES : EXPENSE_CATEGORIES).map((c) => c.name);
+      return res.status(400).json({
+        success: false,
+        error: `Invalid category for ${typeLower}. Must be one of: ${validList.join(', ')}`,
+      });
     }
 
     const sheets = getSheetsClient();
-    const rows = await readSheetRows(sheets, BUDGETS_SHEET, BUDGETS_HEADERS);
-    const match = rows.find((r) => r.id === id);
+    const dateStr = resolveMonthToDate(month);
+    const { summarySheet } = await ensureMonthlySheets(sheets, dateStr);
 
-    if (!match) {
-      return res.status(404).json({ success: false, error: 'Budget not found' });
-    }
+    // Clear the planned cell (set to 0)
+    await writeSummaryCellValue(sheets, summarySheet, catInfo.plannedCell, 0);
 
-    await deleteRowByIndex(sheets, BUDGETS_SHEET, match.rowIndex);
-
-    return res.json({ success: true, deleted_id: id });
+    return res.json({
+      success: true,
+      deleted: true,
+      category: catInfo.name,
+      type: typeLower,
+      cell: catInfo.plannedCell,
+      month: sheetSuffix(dateStr),
+      sheet: summarySheet,
+    });
   } catch (error) {
     console.error('Delete budget error:', error);
     return res.status(500).json({ success: false, error: error.message });
   }
 });
 
-app.post('/api/finance/list-budgets', async (req, res) => {
+// ---------------------------------------------------------
+// Search Delete Budget
+// ---------------------------------------------------------
+
+app.post('/api/finance/search-delete-budget', async (req, res) => {
   try {
-    const body = req.body || {};
-    const activeOnly = unwrap(body.activeOnly);
-    const today = nowISO().slice(0, 10);
+    const searchKeyword = unwrap(req.body.search_keyword);
+    const searchType = unwrap(req.body.search_type);
+    const month = unwrap(req.body.month);
 
-    const sheets = getSheetsClient();
-    let rows = await readSheetRows(sheets, BUDGETS_SHEET, BUDGETS_HEADERS);
-
-    if (!isEmpty(activeOnly) && String(activeOnly).toLowerCase() === 'true') {
-      rows = rows.filter((r) => r.period_start <= today && r.period_end >= today);
+    if (isEmpty(searchKeyword)) {
+      return res.status(400).json({
+        success: false,
+        error: 'search_keyword is required to identify the budget category',
+      });
     }
 
-    const budgets = rows.map((r) => ({
-      id: r.id,
-      title: r.title,
-      linked_category: r.linked_category,
-      amount: parseFloat(r.amount) || 0,
-      period_start: r.period_start,
-      period_end: r.period_end,
-      created: r.created,
-      updated: r.updated,
-    }));
+    const typeLower = isEmpty(searchType) ? null : String(searchType).toLowerCase();
 
-    return res.json({ success: true, count: budgets.length, budgets });
+    let categoriesToSearch = [];
+    if (typeLower === 'expense') {
+      categoriesToSearch = EXPENSE_CATEGORIES.map((c) => ({ ...c, type: 'expense' }));
+    } else if (typeLower === 'income') {
+      categoriesToSearch = INCOME_CATEGORIES.map((c) => ({ ...c, type: 'income' }));
+    } else {
+      categoriesToSearch = [
+        ...EXPENSE_CATEGORIES.map((c) => ({ ...c, type: 'expense' })),
+        ...INCOME_CATEGORIES.map((c) => ({ ...c, type: 'income' })),
+      ];
+    }
+
+    const criteria = { search_keyword: searchKeyword };
+    const matches = categoriesToSearch.filter((c) => matchesBudget(c, criteria));
+
+    if (matches.length === 0) {
+      return res.json({ success: true, found: false, ambiguous: false, deleted: false, candidates: [] });
+    }
+
+    if (matches.length > 1) {
+      return res.json({
+        success: true,
+        found: false,
+        ambiguous: true,
+        deleted: false,
+        candidates: matches.map((c) => ({ category: c.name, type: c.type, planned_cell: c.plannedCell })),
+      });
+    }
+
+    const matched = matches[0];
+    const sheets = getSheetsClient();
+    const dateStr = resolveMonthToDate(month);
+    const { summarySheet } = await ensureMonthlySheets(sheets, dateStr);
+
+    await writeSummaryCellValue(sheets, summarySheet, matched.plannedCell, 0);
+
+    return res.json({
+      success: true,
+      found: true,
+      ambiguous: false,
+      deleted: true,
+      category: matched.name,
+      type: matched.type,
+      cell: matched.plannedCell,
+      month: sheetSuffix(dateStr),
+      sheet: summarySheet,
+    });
+  } catch (error) {
+    console.error('Search-delete budget error:', error);
+    return res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+// ---------------------------------------------------------
+// List Budgets
+// ---------------------------------------------------------
+
+app.post('/api/finance/list-budgets', async (req, res) => {
+  try {
+    const month = unwrap(req.body.month);
+    const typeFilter = unwrap(req.body.type); // "expense", "income", or null (both)
+
+    const sheets = getSheetsClient();
+    const dateStr = resolveMonthToDate(month);
+    const { summarySheet } = await ensureMonthlySheets(sheets, dateStr);
+
+    const budgets = [];
+
+    const shouldInclude = (t) => isEmpty(typeFilter) || String(typeFilter).toLowerCase() === t;
+
+    if (shouldInclude('expense')) {
+      // Batch read all expense planned + actual cells
+      const cells = [];
+      EXPENSE_CATEGORIES.forEach((c) => {
+        cells.push(c.plannedCell, c.actualCell, c.diffCell);
+      });
+      const values = await readSummaryMultipleCells(sheets, summarySheet, cells);
+
+      EXPENSE_CATEGORIES.forEach((c) => {
+        const planned = parseFloat(String(values[c.plannedCell] || '0').replace(/[^0-9.\-]/g, '')) || 0;
+        const actual = parseFloat(String(values[c.actualCell] || '0').replace(/[^0-9.\-]/g, '')) || 0;
+        const diff = parseFloat(String(values[c.diffCell] || '0').replace(/[^0-9.\-]/g, '')) || 0;
+
+        budgets.push({
+          category: c.name,
+          type: 'expense',
+          planned,
+          actual,
+          diff,
+          planned_cell: c.plannedCell,
+        });
+      });
+    }
+
+    if (shouldInclude('income')) {
+      const cells = [];
+      INCOME_CATEGORIES.forEach((c) => {
+        cells.push(c.plannedCell, c.actualCell, c.diffCell);
+      });
+      const values = await readSummaryMultipleCells(sheets, summarySheet, cells);
+
+      INCOME_CATEGORIES.forEach((c) => {
+        const planned = parseFloat(String(values[c.plannedCell] || '0').replace(/[^0-9.\-]/g, '')) || 0;
+        const actual = parseFloat(String(values[c.actualCell] || '0').replace(/[^0-9.\-]/g, '')) || 0;
+        const diff = parseFloat(String(values[c.diffCell] || '0').replace(/[^0-9.\-]/g, '')) || 0;
+
+        budgets.push({
+          category: c.name,
+          type: 'income',
+          planned,
+          actual,
+          diff,
+          planned_cell: c.plannedCell,
+        });
+      });
+    }
+
+    return res.json({
+      success: true,
+      count: budgets.length,
+      month: sheetSuffix(dateStr),
+      sheet: summarySheet,
+      budgets,
+    });
   } catch (error) {
     console.error('List budgets error:', error);
     return res.status(500).json({ success: false, error: error.message });
@@ -795,142 +1350,177 @@ app.post('/api/finance/report', async (req, res) => {
 
     const sheets = getSheetsClient();
 
+    // -------------------------------------------------------
+    // balance
+    // -------------------------------------------------------
     if (queryType === 'balance') {
-      const rows = await readSheetRows(sheets, TRANSACTIONS_SHEET, TRANSACTIONS_HEADERS);
-      const income = rows.filter((r) => r.type === 'income').reduce((sum, r) => sum + (parseFloat(r.amount) || 0), 0);
-      const expense = rows.filter((r) => r.type === 'expense').reduce((sum, r) => sum + (parseFloat(r.amount) || 0), 0);
+      const month = unwrap(body.month);
+      const dateStr = resolveMonthToDate(month);
+      const { summarySheet } = await ensureMonthlySheets(sheets, dateStr);
 
-      return res.json({ success: true, query_type: 'balance', income, expense, balance: income - expense });
+      const cellValues = await readSummaryMultipleCells(sheets, summarySheet, [
+        SUMMARY_CELLS.startBalance,
+        SUMMARY_CELLS.expensesActualTotal,
+        SUMMARY_CELLS.incomeActualTotal,
+        SUMMARY_CELLS.expensesPlannedTotal,
+        SUMMARY_CELLS.incomePlannedTotal,
+      ]);
+
+      const parseCell = (v) => parseFloat(String(v || '0').replace(/[^0-9.\-]/g, '')) || 0;
+
+      const startBalance = parseCell(cellValues[SUMMARY_CELLS.startBalance]);
+      const incomeActual = parseCell(cellValues[SUMMARY_CELLS.incomeActualTotal]);
+      const expenseActual = parseCell(cellValues[SUMMARY_CELLS.expensesActualTotal]);
+      const incomePlanned = parseCell(cellValues[SUMMARY_CELLS.incomePlannedTotal]);
+      const expensePlanned = parseCell(cellValues[SUMMARY_CELLS.expensesPlannedTotal]);
+
+      return res.json({
+        success: true,
+        query_type: 'balance',
+        month: sheetSuffix(dateStr),
+        starting_balance: startBalance,
+        income_planned: incomePlanned,
+        income_actual: incomeActual,
+        expenses_planned: expensePlanned,
+        expenses_actual: expenseActual,
+        end_balance: startBalance + incomeActual - expenseActual,
+        savings_this_month: incomeActual - expenseActual,
+      });
     }
 
+    // -------------------------------------------------------
+    // budget_remaining
+    // -------------------------------------------------------
     if (queryType === 'budget_remaining') {
-      const budgetTitle = unwrap(body.budget_title);
-      if (isEmpty(budgetTitle)) {
-        return res.status(400).json({ success: false, error: 'Missing budget_title for budget_remaining query' });
+      const month = unwrap(body.month);
+      const category = unwrap(body.category);
+      const type = unwrap(body.type);
+
+      if (isEmpty(category)) {
+        return res.status(400).json({ success: false, error: 'Missing category for budget_remaining query' });
       }
 
-      const budgetRows = await readSheetRows(sheets, BUDGETS_SHEET, BUDGETS_HEADERS);
-      const today = nowISO().slice(0, 10);
-
-      const candidates = budgetRows.filter(
-        (b) =>
-          b.title.toLowerCase() === String(budgetTitle).toLowerCase() &&
-          b.period_start <= today &&
-          b.period_end >= today
-      );
-
-      if (candidates.length === 0) {
-        return res.status(404).json({ success: false, error: 'No active budget found with that title' });
+      const typeLower = isEmpty(type) ? 'expense' : String(type).toLowerCase();
+      const catInfo = getCategoryInfo(category, typeLower);
+      if (!catInfo) {
+        return res.status(400).json({ success: false, error: `Category "${category}" not found for type "${typeLower}"` });
       }
 
-      candidates.sort((a, b) => new Date(b.created).getTime() - new Date(a.created).getTime());
-      const budget = candidates[0];
+      const dateStr = resolveMonthToDate(month);
+      const { summarySheet } = await ensureMonthlySheets(sheets, dateStr);
 
-      const txRows = await readSheetRows(sheets, TRANSACTIONS_SHEET, TRANSACTIONS_HEADERS);
-      const spent = txRows
-        .filter(
-          (t) =>
-            t.type === 'expense' &&
-            t.category.toLowerCase() === (budget.linked_category || '').toLowerCase() &&
-            t.date >= budget.period_start &&
-            t.date <= budget.period_end
-        )
-        .reduce((sum, t) => sum + (parseFloat(t.amount) || 0), 0);
+      const cellValues = await readSummaryMultipleCells(sheets, summarySheet, [catInfo.plannedCell, catInfo.actualCell, catInfo.diffCell]);
+      const parseCell = (v) => parseFloat(String(v || '0').replace(/[^0-9.\-]/g, '')) || 0;
 
-      const budgetAmount = parseFloat(budget.amount) || 0;
+      const planned = parseCell(cellValues[catInfo.plannedCell]);
+      const actual = parseCell(cellValues[catInfo.actualCell]);
+      const diff = parseCell(cellValues[catInfo.diffCell]);
 
       return res.json({
         success: true,
         query_type: 'budget_remaining',
-        budget: {
-          id: budget.id,
-          title: budget.title,
-          linked_category: budget.linked_category,
-          amount: budgetAmount,
-          period_start: budget.period_start,
-          period_end: budget.period_end,
-        },
-        spent,
-        remaining: budgetAmount - spent,
+        month: sheetSuffix(dateStr),
+        category: catInfo.name,
+        type: typeLower,
+        planned,
+        actual,
+        remaining: planned - actual,
+        diff,
       });
     }
 
+    // -------------------------------------------------------
+    // breakdown
+    // -------------------------------------------------------
     if (queryType === 'breakdown') {
-      const dateMin = unwrap(body.dateMin);
-      const dateMax = unwrap(body.dateMax);
+      const month = unwrap(body.month);
       const typeFilterRaw = unwrap(body.type);
-      const typeFilter = isEmpty(typeFilterRaw) ? 'expense' : String(typeFilterRaw).toLowerCase();
+      const typeLower = isEmpty(typeFilterRaw) ? 'expense' : String(typeFilterRaw).toLowerCase();
 
-      const rows = await readSheetRows(sheets, TRANSACTIONS_SHEET, TRANSACTIONS_HEADERS);
-      let filtered = rows.filter((r) => r.type === typeFilter);
+      const dateStr = resolveMonthToDate(month);
+      const { summarySheet } = await ensureMonthlySheets(sheets, dateStr);
 
-      if (!isEmpty(dateMin)) filtered = filtered.filter((r) => r.date >= dateMin);
-      if (!isEmpty(dateMax)) filtered = filtered.filter((r) => r.date <= dateMax);
-
-      const grouped = {};
-      filtered.forEach((r) => {
-        const cat = r.category || 'Lainnya';
-        grouped[cat] = (grouped[cat] || 0) + (parseFloat(r.amount) || 0);
+      const categories = typeLower === 'income' ? INCOME_CATEGORIES : EXPENSE_CATEGORIES;
+      const cells = [];
+      categories.forEach((c) => {
+        cells.push(c.plannedCell, c.actualCell, c.diffCell);
       });
 
-      const breakdown = Object.entries(grouped)
-        .map(([category, total]) => ({ category, total }))
-        .sort((a, b) => b.total - a.total);
+      const values = await readSummaryMultipleCells(sheets, summarySheet, cells);
+      const parseCell = (v) => parseFloat(String(v || '0').replace(/[^0-9.\-]/g, '')) || 0;
+
+      const breakdown = categories.map((c) => ({
+        category: c.name,
+        planned: parseCell(values[c.plannedCell]),
+        actual: parseCell(values[c.actualCell]),
+        diff: parseCell(values[c.diffCell]),
+      }));
+
+      const totalActual = breakdown.reduce((sum, b) => sum + b.actual, 0);
+      const breakdownWithPct = breakdown.map((b) => ({
+        ...b,
+        percentage: totalActual > 0 ? Math.round((b.actual / totalActual) * 100) : 0,
+      }));
 
       return res.json({
         success: true,
         query_type: 'breakdown',
-        type: typeFilter,
-        period: { dateMin: dateMin || null, dateMax: dateMax || null },
-        breakdown,
+        month: sheetSuffix(dateStr),
+        type: typeLower,
+        total_actual: totalActual,
+        breakdown: breakdownWithPct,
       });
     }
 
+    // -------------------------------------------------------
+    // period_comparison
+    // -------------------------------------------------------
     if (queryType === 'period_comparison') {
-      const currentMin = unwrap(body.currentMin);
-      const currentMax = unwrap(body.currentMax);
-      const previousMin = unwrap(body.previousMin);
-      const previousMax = unwrap(body.previousMax);
+      const currentMonth = unwrap(body.current_month);
+      const previousMonth = unwrap(body.previous_month);
       const typeFilterRaw = unwrap(body.type);
-      const typeFilter = isEmpty(typeFilterRaw) ? 'expense' : String(typeFilterRaw).toLowerCase();
+      const typeLower = isEmpty(typeFilterRaw) ? 'expense' : String(typeFilterRaw).toLowerCase();
 
-      if (isEmpty(currentMin) || isEmpty(currentMax) || isEmpty(previousMin) || isEmpty(previousMax)) {
-        return res.status(400).json({ success: false, error: 'Missing one or more period bounds for period_comparison' });
+      if (isEmpty(currentMonth) || isEmpty(previousMonth)) {
+        return res.status(400).json({ success: false, error: 'Missing current_month or previous_month for period_comparison' });
       }
 
-      const rows = await readSheetRows(sheets, TRANSACTIONS_SHEET, TRANSACTIONS_HEADERS);
-      const typed = rows.filter((r) => r.type === typeFilter);
+      const currentDateStr = resolveMonthToDate(currentMonth);
+      const previousDateStr = resolveMonthToDate(previousMonth);
 
-      const sumInRange = (min, max) =>
-        typed.filter((r) => r.date >= min && r.date <= max).reduce((sum, r) => sum + (parseFloat(r.amount) || 0), 0);
+      const { summarySheet: currentSummary } = await ensureMonthlySheets(sheets, currentDateStr);
+      const { summarySheet: previousSummary } = await ensureMonthlySheets(sheets, previousDateStr);
 
-      const currentTotal = sumInRange(currentMin, currentMax);
-      const previousTotal = sumInRange(previousMin, previousMax);
+      const totalCell = typeLower === 'income' ? SUMMARY_CELLS.incomeActualTotal : SUMMARY_CELLS.expensesActualTotal;
+
+      const currentVal = await readSummaryCellValue(sheets, currentSummary, totalCell);
+      const previousVal = await readSummaryCellValue(sheets, previousSummary, totalCell);
+
+      const parseCell = (v) => parseFloat(String(v || '0').replace(/[^0-9.\-]/g, '')) || 0;
+      const currentTotal = parseCell(currentVal);
+      const previousTotal = parseCell(previousVal);
 
       return res.json({
         success: true,
         query_type: 'period_comparison',
-        type: typeFilter,
-        current: { period: { dateMin: currentMin, dateMax: currentMax }, total: currentTotal },
-        previous: { period: { dateMin: previousMin, dateMax: previousMax }, total: previousTotal },
+        type: typeLower,
+        current: { month: sheetSuffix(currentDateStr), total: currentTotal },
+        previous: { month: sheetSuffix(previousDateStr), total: previousTotal },
         difference: currentTotal - previousTotal,
+        change_percentage: previousTotal > 0 ? Math.round(((currentTotal - previousTotal) / previousTotal) * 100) : null,
       });
     }
 
-    // ---------------------------------------------------------
-    // plan_calculate — for a PLANNED (not-yet-logged) transaction,
-    // check whether it's affordable, WITHOUT writing anything.
-    // Mirrors the same guard priority used in create-transaction:
-    //   1. If an active budget is linked to the category → check against that budget.
-    //   2. Otherwise → fall back to checking against the all-time balance.
-    // ---------------------------------------------------------
+    // -------------------------------------------------------
+    // plan_calculate
+    // -------------------------------------------------------
     if (queryType === 'plan_calculate') {
-      const categoryRaw = unwrap(body.category);
+      const category = unwrap(body.category);
       const amountRaw = unwrap(body.amount);
-      const dateRaw = unwrap(body.date);
-      const typeRaw = unwrap(body.type);
+      const type = unwrap(body.type);
+      const month = unwrap(body.month);
 
-      if (isEmpty(categoryRaw) || isEmpty(amountRaw)) {
+      if (isEmpty(category) || isEmpty(amountRaw)) {
         return res.status(400).json({
           success: false,
           error_code: 'missing_fields',
@@ -938,12 +1528,14 @@ app.post('/api/finance/report', async (req, res) => {
         });
       }
 
-      const resolvedCategory = resolveCategory(categoryRaw);
-      if (!resolvedCategory) {
+      const typeLower = isEmpty(type) ? 'expense' : String(type).toLowerCase();
+      const catInfo = getCategoryInfo(category, typeLower);
+      if (!catInfo) {
+        const validList = (typeLower === 'income' ? INCOME_CATEGORIES : EXPENSE_CATEGORIES).map((c) => c.name);
         return res.status(400).json({
           success: false,
           error_code: 'invalid_category',
-          error: `Invalid category. Must be one of: ${VALID_CATEGORIES.join(', ')}`,
+          error: `Invalid category. Must be one of: ${validList.join(', ')}`,
         });
       }
 
@@ -952,85 +1544,30 @@ app.post('/api/finance/report', async (req, res) => {
         return res.status(400).json({ success: false, error_code: 'invalid_amount', error: 'Invalid amount' });
       }
 
-      const typeLower = isEmpty(typeRaw) ? 'expense' : String(typeRaw).toLowerCase();
-      if (!['income', 'expense'].includes(typeLower)) {
-        return res.status(400).json({ success: false, error_code: 'invalid_type', error: 'Invalid type — must be "income" or "expense"' });
-      }
+      const dateStr = resolveMonthToDate(month);
+      const { summarySheet } = await ensureMonthlySheets(sheets, dateStr);
 
-      const planDate = isEmpty(dateRaw) ? nowISO().slice(0, 10) : dateRaw;
+      const cellValues = await readSummaryMultipleCells(sheets, summarySheet, [catInfo.plannedCell, catInfo.actualCell]);
+      const parseCell = (v) => parseFloat(String(v || '0').replace(/[^0-9.\-]/g, '')) || 0;
 
-      if (typeLower === 'income') {
-        return res.json({
-          success: true,
-          query_type: 'plan_calculate',
-          type: 'income',
-          category: resolvedCategory,
-          amount: amountNum,
-          date: planDate,
-          checked_against: 'none',
-          enough: true,
-          reason: 'planned income does not require an affordability check',
-        });
-      }
-
-      const budgetRows = await readSheetRows(sheets, BUDGETS_SHEET, BUDGETS_HEADERS);
-      const matchedBudget = findActiveBudgetForCategory(budgetRows, resolvedCategory, planDate);
-
-      if (matchedBudget) {
-        const txRows = await readSheetRows(sheets, TRANSACTIONS_SHEET, TRANSACTIONS_HEADERS);
-        const spentBefore = txRows
-          .filter(
-            (t) =>
-              t.type === 'expense' &&
-              t.category.toLowerCase() === matchedBudget.linked_category.toLowerCase() &&
-              t.date >= matchedBudget.period_start &&
-              t.date <= matchedBudget.period_end
-          )
-          .reduce((sum, t) => sum + (parseFloat(t.amount) || 0), 0);
-
-        const budgetAmount = parseFloat(matchedBudget.amount) || 0;
-        const projectedSpent = spentBefore + amountNum;
-        const enough = projectedSpent <= budgetAmount;
-
-        return res.json({
-          success: true,
-          query_type: 'plan_calculate',
-          type: 'expense',
-          category: resolvedCategory,
-          amount: amountNum,
-          date: planDate,
-          checked_against: 'budget',
-          budget: {
-            id: matchedBudget.id,
-            title: matchedBudget.title,
-            linked_category: matchedBudget.linked_category,
-            amount: budgetAmount,
-            period_start: matchedBudget.period_start,
-            period_end: matchedBudget.period_end,
-          },
-          spent_before: spentBefore,
-          remaining_before: budgetAmount - spentBefore,
-          projected_spent: projectedSpent,
-          remaining_after: budgetAmount - projectedSpent,
-          enough,
-        });
-      }
-
-      const balanceInfo = await computeCurrentBalance(sheets);
-      const projectedBalance = balanceInfo.balance - amountNum;
-      const enough = projectedBalance >= 0;
+      const planned = parseCell(cellValues[catInfo.plannedCell]);
+      const actual = parseCell(cellValues[catInfo.actualCell]);
+      const projectedActual = actual + amountNum;
+      const enough = projectedActual <= planned;
 
       return res.json({
         success: true,
         query_type: 'plan_calculate',
-        type: 'expense',
-        category: resolvedCategory,
+        type: typeLower,
+        category: catInfo.name,
         amount: amountNum,
-        date: planDate,
-        checked_against: 'balance',
-        current_balance: balanceInfo.balance,
-        projected_balance: projectedBalance,
-        enough,
+        month: sheetSuffix(dateStr),
+        planned,
+        actual_before: actual,
+        projected_actual: projectedActual,
+        remaining_before: planned - actual,
+        remaining_after: planned - projectedActual,
+        within_budget: enough,
       });
     }
 
