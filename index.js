@@ -1025,8 +1025,20 @@ app.post('/api/finance/list-transactions', async (req, res) => {
     }
 
     // Apply filters
-    if (!isEmpty(dateMin)) allRows = allRows.filter((r) => r.date >= dateMin);
-    if (!isEmpty(dateMax)) allRows = allRows.filter((r) => r.date <= dateMax);
+    if (!isEmpty(dateMin)) {
+      const dMin = parseTxDate(dateMin);
+      allRows = allRows.filter((r) => {
+        const rd = parseTxDate(r.date);
+        return isNaN(rd) || rd === 0 ? true : rd >= dMin;
+      });
+    }
+    if (!isEmpty(dateMax)) {
+      const dMax = parseTxDate(dateMax);
+      allRows = allRows.filter((r) => {
+        const rd = parseTxDate(r.date);
+        return isNaN(rd) || rd === 0 ? true : rd <= dMax;
+      });
+    }
     if (!isEmpty(categoryFilter)) allRows = allRows.filter((r) => (r.category || '').toLowerCase() === String(categoryFilter).toLowerCase());
     if (keyword) allRows = allRows.filter((r) => (r.description || '').toLowerCase().includes(keyword));
 
