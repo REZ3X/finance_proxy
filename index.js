@@ -1330,6 +1330,37 @@ app.post('/api/finance/search-edit-planned', async (req, res) => {
   }
 });
 
+const DEFAULT_CATEGORIES = [
+  'food', 'gifts', 'health/medical', 'home', 'transportation', 
+  'personal', 'pets', 'utilities', 'travel', 'debt', 'other',
+  'savings', 'paycheck', 'bonus', 'interest'
+];
+
+async function executePlannedDeletion(sheets, summarySheet, catInfo) {
+  const actualValues = await readSummaryMultipleCells(sheets, summarySheet, [catInfo.actualCell]);
+  const actual = parseFloat(String(actualValues[catInfo.actualCell] || '0').replace(/[^0-9.\-]/g, '')) || 0;
+  
+  const isDefault = DEFAULT_CATEGORIES.includes(catInfo.name.toLowerCase());
+  
+  if (actual === 0 && !isDefault) {
+    const nameCol = catInfo.plannedCell.startsWith('C') ? 'B' : 'H';
+    const nameCell = `${nameCol}${catInfo.row}`;
+    
+    await sheets.spreadsheets.values.batchUpdate({
+      spreadsheetId: SPREADSHEET_ID,
+      requestBody: {
+        valueInputOption: 'USER_ENTERED',
+        data: [
+          { range: `'${summarySheet}'!${nameCell}`, values: [['']] },
+          { range: `'${summarySheet}'!${catInfo.plannedCell}`, values: [[0]] }
+        ]
+      }
+    });
+  } else {
+    await executePlannedDeletion(sheets, summarySheet, catInfo);
+  }
+}
+
 // --- Delete Planned (clear planned amount) ---
 
 app.post('/api/finance/delete-planned', async (req, res) => {
@@ -1350,7 +1381,7 @@ app.post('/api/finance/delete-planned', async (req, res) => {
 
     const catInfo = await ensureCategoryExists(sheets, summarySheet, summarySheetId, category, typeLower);
 
-    await writeSummaryCellValue(sheets, summarySheet, catInfo.plannedCell, 0);
+    await executePlannedDeletion(sheets, summarySheet, catInfo);
 
     return res.json({
       success: true,
@@ -1421,7 +1452,7 @@ app.post('/api/finance/search-delete-planned', async (req, res) => {
 
     const matched = matches[0];
 
-    await writeSummaryCellValue(sheets, summarySheet, matched.plannedCell, 0);
+    await executePlannedDeletion(sheets, summarySheet, matched);
 
     return res.json({
       success: true,
