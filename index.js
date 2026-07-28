@@ -1734,24 +1734,16 @@ app.post('/api/finance/report', async (req, res) => {
         });
       }
 
-      const typeLower = isEmpty(type) ? 'expense' : String(type).toLowerCase();
-      const catInfo = getCategoryInfo(category, typeLower);
-      if (!catInfo) {
-        const validList = (typeLower === 'income' ? INCOME_CATEGORIES : EXPENSE_CATEGORIES).map((c) => c.name);
-        return res.status(400).json({
-          success: false,
-          error_code: 'invalid_category',
-          error: `Invalid category. Must be one of: ${validList.join(', ')}`,
-        });
-      }
-
       const amountNum = parseFloat(amountRaw);
       if (isNaN(amountNum) || amountNum <= 0) {
         return res.status(400).json({ success: false, error_code: 'invalid_amount', error: 'Invalid amount' });
       }
 
       const dateStr = resolveMonthToDate(month);
-      const { summarySheet } = await ensureMonthlySheets(sheets, dateStr);
+      const { summarySheet, summarySheetId } = await ensureMonthlySheets(sheets, dateStr);
+
+      const typeLower = isEmpty(type) ? 'expense' : String(type).toLowerCase();
+      const catInfo = await ensureCategoryExists(sheets, summarySheet, summarySheetId, category, typeLower);
 
       const cellValues = await readSummaryMultipleCells(sheets, summarySheet, [catInfo.plannedCell, catInfo.actualCell]);
       const parseCell = (v) => parseFloat(String(v || '0').replace(/[^0-9.\-]/g, '')) || 0;
