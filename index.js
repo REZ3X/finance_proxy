@@ -1613,13 +1613,11 @@ app.post('/api/finance/report', async (req, res) => {
       }
 
       const typeLower = isEmpty(type) ? 'expense' : String(type).toLowerCase();
-      const catInfo = getCategoryInfo(category, typeLower);
-      if (!catInfo) {
-        return res.status(400).json({ success: false, error: `Category "${category}" not found for type "${typeLower}"` });
-      }
 
       const dateStr = resolveMonthToDate(month);
-      const { summarySheet } = await ensureMonthlySheets(sheets, dateStr);
+      const { summarySheet, summarySheetId } = await ensureMonthlySheets(sheets, dateStr);
+
+      const catInfo = await ensureCategoryExists(sheets, summarySheet, summarySheetId, category, typeLower);
 
       const cellValues = await readSummaryMultipleCells(sheets, summarySheet, [catInfo.plannedCell, catInfo.actualCell, catInfo.diffCell]);
       const parseCell = (v) => parseFloat(String(v || '0').replace(/[^0-9.\-]/g, '')) || 0;
@@ -1650,7 +1648,9 @@ app.post('/api/finance/report', async (req, res) => {
       const dateStr = resolveMonthToDate(month);
       const { summarySheet } = await ensureMonthlySheets(sheets, dateStr);
 
-      const categories = typeLower === 'income' ? INCOME_CATEGORIES : EXPENSE_CATEGORIES;
+      const { expenses, income } = await loadCategories(sheets, summarySheet);
+      const categories = (typeLower === 'income' ? income : expenses).filter(c => !c.isEmpty);
+      
       const cells = [];
       categories.forEach((c) => {
         cells.push(c.plannedCell, c.actualCell, c.diffCell);
