@@ -133,7 +133,7 @@ async function loadCategories(sheets, sheetName) {
     ranges: [`'${sheetName}'!B28:B`, `'${sheetName}'!H28:H`],
     valueRenderOption: 'UNFORMATTED_VALUE',
   });
-  
+
   const expRows = response.data.valueRanges[0].values || [];
   const incRows = response.data.valueRanges[1].values || [];
 
@@ -151,25 +151,19 @@ async function loadCategories(sheets, sheetName) {
 
   const expenses = [];
   for (let i = 0; i < expRows.length; i++) {
-    // If the name is blank, we register it as an empty slot.
-    // We stop parsing if we hit 5 consecutive completely blank rows to avoid reading the whole sheet
     expenses.push(parseCat(expRows[i][0], 28 + i, 0));
   }
-  
+
   const income = [];
   for (let i = 0; i < incRows.length; i++) {
     income.push(parseCat(incRows[i][0], 28 + i, 6));
   }
 
-  // Trim trailing empty slots to not have an infinite list, keeping only the actual table bounds.
-  // The template has expenses down to row 41 and income down to row 33 natively.
-  // We guarantee at least those minimum bounds.
-  while(expenses.length > 14 && expenses[expenses.length - 1].isEmpty) expenses.pop();
-  while(income.length > 6 && income[income.length - 1].isEmpty) income.pop();
+  while (expenses.length > 14 && expenses[expenses.length - 1].isEmpty) expenses.pop();
+  while (income.length > 6 && income[income.length - 1].isEmpty) income.pop();
 
-  // If the sheet was completely empty somehow, ensure we have at least the base template slots.
-  while(expenses.length < 14) expenses.push(parseCat('', 28 + expenses.length, 0));
-  while(income.length < 6) income.push(parseCat('', 28 + income.length, 6));
+  while (expenses.length < 14) expenses.push(parseCat('', 28 + expenses.length, 0));
+  while (income.length < 6) income.push(parseCat('', 28 + income.length, 6));
 
   return { expenses, income };
 }
@@ -223,7 +217,7 @@ async function insertCategoryRow(sheets, sheetId, type, rowIndex) {
       }]
     }
   });
-  
+
   // 3. Clear the copied Name and Planned amount in the new row so it's a true blank slot
   const cellToClearName = `${isExp ? 'B' : 'H'}${rowIndex}`;
   const cellToClearPlanned = `${isExp ? 'D' : 'J'}${rowIndex}`;
@@ -261,11 +255,11 @@ async function ensureCategoryExists(sheets, summarySheet, summarySheetId, catego
   if (isEmpty(categoryName)) {
     categoryName = 'Other';
   }
-  
+
   const { expenses, income } = await loadCategories(sheets, summarySheet);
   const catList = type === 'income' ? income : expenses;
   const searchName = String(categoryName).trim();
-  
+
   const found = catList.find(c => !c.isEmpty && c.name.toLowerCase() === searchName.toLowerCase());
   if (found) {
     found.isNew = false;
@@ -277,7 +271,7 @@ async function ensureCategoryExists(sheets, summarySheet, summarySheetId, catego
   if (!slot) {
     const lastRowIndex = catList[catList.length - 1].row;
     await insertCategoryRow(sheets, summarySheetId, type, lastRowIndex);
-    
+
     const colOffset = type === 'income' ? 6 : 0;
     slot = {
       name: searchName,
@@ -1331,7 +1325,7 @@ app.post('/api/finance/search-edit-planned', async (req, res) => {
 });
 
 const DEFAULT_CATEGORIES = [
-  'food', 'gifts', 'health/medical', 'home', 'transportation', 
+  'food', 'gifts', 'health/medical', 'home', 'transportation',
   'personal', 'pets', 'utilities', 'travel', 'debt', 'other',
   'savings', 'paycheck', 'bonus', 'interest'
 ];
@@ -1339,13 +1333,13 @@ const DEFAULT_CATEGORIES = [
 async function executePlannedDeletion(sheets, summarySheet, catInfo) {
   const actualValues = await readSummaryMultipleCells(sheets, summarySheet, [catInfo.actualCell]);
   const actual = parseFloat(String(actualValues[catInfo.actualCell] || '0').replace(/[^0-9.\-]/g, '')) || 0;
-  
+
   const isDefault = DEFAULT_CATEGORIES.includes(catInfo.name.toLowerCase());
-  
+
   if (actual === 0 && !isDefault) {
     const nameCol = catInfo.plannedCell.startsWith('C') ? 'B' : 'H';
     const nameCell = `${nameCol}${catInfo.row}`;
-    
+
     await sheets.spreadsheets.values.batchUpdate({
       spreadsheetId: SPREADSHEET_ID,
       requestBody: {
@@ -1374,7 +1368,7 @@ app.post('/api/finance/delete-planned', async (req, res) => {
     }
 
     const typeLower = isEmpty(type) ? 'expense' : String(type).toLowerCase();
-    
+
     const sheets = getSheetsClient();
     const dateStr = resolveMonthToDate(month);
     const { summarySheet, summarySheetId } = await ensureMonthlySheets(sheets, dateStr);
@@ -1483,7 +1477,7 @@ app.post('/api/finance/list-planned', async (req, res) => {
     const { summarySheet } = await ensureMonthlySheets(sheets, dateStr);
 
     const { expenses, income } = await loadCategories(sheets, summarySheet);
-    
+
     const budgets = [];
 
     const shouldInclude = (t) => isEmpty(typeFilter) || String(typeFilter).toLowerCase() === t;
@@ -1650,7 +1644,7 @@ app.post('/api/finance/report', async (req, res) => {
 
       const { expenses, income } = await loadCategories(sheets, summarySheet);
       const categories = (typeLower === 'income' ? income : expenses).filter(c => !c.isEmpty);
-      
+
       const cells = [];
       categories.forEach((c) => {
         cells.push(c.plannedCell, c.actualCell, c.diffCell);
@@ -1759,7 +1753,7 @@ app.post('/api/finance/report', async (req, res) => {
       const catInfo = await ensureCategoryExists(sheets, summarySheet, summarySheetId, category, typeLower);
 
       const cellValues = await readSummaryMultipleCells(sheets, summarySheet, [
-        catInfo.plannedCell, 
+        catInfo.plannedCell,
         catInfo.actualCell,
         SUMMARY_CELLS.startBalance,
         SUMMARY_CELLS.incomeActualTotal,
