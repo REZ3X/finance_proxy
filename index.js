@@ -267,7 +267,10 @@ async function ensureCategoryExists(sheets, summarySheet, summarySheetId, catego
   const searchName = String(categoryName).trim();
   
   const found = catList.find(c => !c.isEmpty && c.name.toLowerCase() === searchName.toLowerCase());
-  if (found) return found;
+  if (found) {
+    found.isNew = false;
+    return found;
+  }
 
   let slot = catList.find(c => c.isEmpty);
 
@@ -300,6 +303,7 @@ async function ensureCategoryExists(sheets, summarySheet, summarySheetId, catego
 
   slot.name = searchName;
   slot.isEmpty = false;
+  slot.isNew = true;
   return slot;
 }
 
@@ -1222,6 +1226,7 @@ app.post('/api/finance/set-planned', async (req, res) => {
     return res.json({
       success: true,
       action: 'set',
+      is_new: catInfo.isNew,
       category: catInfo.name,
       type: typeLower,
       planned_amount: amountNum,
