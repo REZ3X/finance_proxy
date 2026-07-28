@@ -1739,36 +1739,70 @@ app.post('/api/finance/report', async (req, res) => {
         return res.status(400).json({ success: false, error_code: 'invalid_amount', error: 'Invalid amount' });
       }
 
+      const typeLower = isEmpty(type) ? 'expense' : String(type).toLowerCase();
+
+      // Income check (no funds check needed)
+      if (typeLower === 'income') {
+        return res.json({
+          success: true,
+          query_type: 'plan_calculate',
+          checked_against: 'none',
+          type: 'income',
+          amount: amountNum,
+          enough: true
+        });
+      }
+
       const dateStr = resolveMonthToDate(month);
       const { summarySheet, summarySheetId } = await ensureMonthlySheets(sheets, dateStr);
 
-      const typeLower = isEmpty(type) ? 'expense' : String(type).toLowerCase();
       const catInfo = await ensureCategoryExists(sheets, summarySheet, summarySheetId, category, typeLower);
 
-      const cellValues = await readSummaryMultipleCells(sheets, summarySheet, [catInfo.plannedCell, catInfo.actualCell]);
+      const cellValues = await readSummaryMultipleCells(sheets, summarySheet, [
+        catInfo.plannedCell, 
+        catInfo.actualCell,
+        SUMMARY_CELLS.startBalance,
+        SUMMARY_CELLS.incomeActualTotal,
+        SUMMARY_CELLS.expensesActualTotal
+      ]);
       const parseCell = (v) => parseFloat(String(v || '0').replace(/[^0-9.\-]/g, '')) || 0;
 
       const planned = parseCell(cellValues[catInfo.plannedCell]);
       const actual = parseCell(cellValues[catInfo.actualCell]);
       const projectedActual = actual + amountNum;
-      const enough = projectedActual <= planned;
 
-      return res.json({
-        success: true,
-        query_type: 'plan_calculate',
-        type: typeLower,
-        category: catInfo.name,
-        amount: amountNum,
-        month: sheetSuffix(dateStr),
-        planned,
-        actual_before: actual,
-        projected_actual: projectedActual,
-        remaining_before: planned - actual,
-        remaining_after: planned - projectedActual,
-        within_budget: enough,
-      });
+      if (planned > 0) {
+        // Check against budget
+        return res.json({
+          success: true,
+          query_type: 'plan_calculate',
+          checked_against: 'budget',
+          budget: { title: catInfo.name, amount: planned },
+          spent_before: actual,
+          projected_spent: projectedActual,
+          remaining_before: planned - actual,
+          remaining_after: planned - projectedActual,
+          enough: (planned - projectedActual >= 0)
+        });
+      } else {
+        // Check against overall balance
+        const startBal = parseCell(cellValues[SUMMARY_CELLS.startBalance]);
+        const incAct = parseCell(cellValues[SUMMARY_CELLS.incomeActualTotal]);
+        const expAct = parseCell(cellValues[SUMMARY_CELLS.expensesActualTotal]);
+        const current_balance = startBal + incAct - expAct;
+        const projected_balance = current_balance - amountNum;
+        
+        return res.json({
+          success: true,
+          query_type: 'plan_calculate',
+          checked_against: 'balance',
+          current_balance,
+          amount: amountNum,
+          projected_balance,
+          enough: (projected_balance >= 0)
+        });
+      }
     }
-
     return res.status(400).json({ success: false, error: `Unknown query_type: ${queryType}` });
   } catch (error) {
     console.error('Report error:', error);
