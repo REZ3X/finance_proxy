@@ -264,7 +264,7 @@ You can try out a live example of the finance bot running on Botika Webchat:
 
 You can see the live example of the sheets:
 
-🔗 **[https://docs.google.com/spreadsheets/d/1NC3JvFAZpPVGDgIXZo8RzdaTpp9NLL7PB_olS_cZFDY/edit?usp=sharing](https://docs.google.com/spreadsheets/d/1NC3JvFAZpPVGDgIXZo8RzdaTpp9NLL7PB_olS_cZFDY/edit?usp=sharing)**
+🔗 **[https://docs.google.com/spreadsheets/d/1cJiS5e1TNHaJWISigumX8qFjA3ZXcOmFJJPMFkn8WZY/edit?usp=sharing](https://docs.google.com/spreadsheets/d/1cJiS5e1TNHaJWISigumX8qFjA3ZXcOmFJJPMFkn8WZY/edit?usp=sharing)**
 
 ---
 
