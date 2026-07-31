@@ -1548,7 +1548,7 @@ app.post('/api/finance/report', async (req, res) => {
     const body = req.body || {};
     const queryTypeRaw = unwrap(body.query_type);
 
-    const VALID_QUERY_TYPES = ['balance', 'budget_remaining', 'breakdown', 'period_comparison', 'plan_calculate'];
+    const VALID_QUERY_TYPES = ['balance', 'budget_remaining', 'breakdown', 'period_comparison', 'plan_calculate', 'trend', 'category_share', 'top_transactions'];
     const queryType = String(queryTypeRaw || '').trim();
 
     if (!VALID_QUERY_TYPES.includes(queryType)) {
@@ -1582,6 +1582,9 @@ app.post('/api/finance/report', async (req, res) => {
       const incomePlanned = parseCell(cellValues[SUMMARY_CELLS.incomePlannedTotal]);
       const expensePlanned = parseCell(cellValues[SUMMARY_CELLS.expensesPlannedTotal]);
 
+      const savingsThisMonth = incomeActual - expenseActual;
+      const savingsRate = incomeActual > 0 ? savingsThisMonth / incomeActual : 0;
+
       return res.json({
         success: true,
         query_type: 'balance',
@@ -1592,7 +1595,8 @@ app.post('/api/finance/report', async (req, res) => {
         expenses_planned: expensePlanned,
         expenses_actual: expenseActual,
         end_balance: startBalance + incomeActual - expenseActual,
-        savings_this_month: incomeActual - expenseActual,
+        savings_this_month: savingsThisMonth,
+        savings_rate: savingsRate,
       });
     }
 
@@ -1797,6 +1801,170 @@ app.post('/api/finance/report', async (req, res) => {
         });
       }
     }
+
+    // -- Helpers for trend & category_share --
+    const getMonthsList = (bodyMonths, bodyCount, baseMonthStr) => {
+      let mList = bodyMonths;
+      if (typeof mList === 'string') {
+        try { mList = JSON.parse(mList); } catch (e) {}
+      }
+      if (!Array.isArray(mList)) mList = null;
+
+      if (mList && mList.length > 0) return mList.map(m => sheetSuffix(resolveMonthToDate(m)));
+
+      const countRaw = unwrap(bodyCount);
+      const count = !isEmpty(countRaw) ? parseInt(countRaw, 10) : 6;
+      const baseDate = new Date(resolveMonthToDate(baseMonthStr));
+      
+      const result = [];
+      for (let i = count - 1; i >= 0; i--) {
+        const d = new Date(baseDate.getFullYear(), baseDate.getMonth() - i, 1);
+        const mm = String(d.getMonth() + 1).padStart(2, '0');
+        result.push(`${mm}/${d.getFullYear()}`);
+      }
+      return result;
+    };
+
+    // -- trend --
+    if (queryType === 'trend') {
+      const monthInput = unwrap(body.month);
+      const targetMonths = getMonthsList(body.months, body.count, monthInput);
+
+      const trendData = [];
+      for (const m of targetMonths) {
+        const dStr = resolveMonthToDate(m);
+        const { summarySheet } = await ensureMonthlySheets(sheets, dStr);
+        
+        const cellValues = await readSummaryMultipleCells(sheets, summarySheet, [
+          SUMMARY_CELLS.expensesActualTotal,
+          SUMMARY_CELLS.incomeActualTotal,
+        ]);
+        const parseCell = (v) => parseFloat(String(v || '0').replace(/[^0-9.\-]/g, '')) || 0;
+        
+        trendData.push({
+          month: m,
+          income_actual: parseCell(cellValues[SUMMARY_CELLS.incomeActualTotal]),
+          expenses_actual: parseCell(cellValues[SUMMARY_CELLS.expensesActualTotal]),
+        });
+      }
+
+      return res.json({
+        success: true,
+        query_type: 'trend',
+        months: targetMonths,
+        trend: trendData
+      });
+    }
+
+    // -- category_share --
+    if (queryType === 'category_share') {
+      const monthInput = unwrap(body.month);
+      const categoryFilter = unwrap(body.category);
+      const typeFilterRaw = unwrap(body.type);
+      const typeLower = isEmpty(typeFilterRaw) ? 'expense' : String(typeFilterRaw).toLowerCase();
+      
+      const targetMonths = getMonthsList(body.months, body.count, monthInput);
+
+      const shareData = [];
+      for (const m of targetMonths) {
+        const dStr = resolveMonthToDate(m);
+        const { summarySheet } = await ensureMonthlySheets(sheets, dStr);
+        
+        const { expenses, income } = await loadCategories(sheets, summarySheet);
+        const categories = (typeLower === 'income' ? income : expenses).filter(c => !c.isEmpty);
+        
+        const totalCell = typeLower === 'income' ? SUMMARY_CELLS.incomeActualTotal : SUMMARY_CELLS.expensesActualTotal;
+        
+        const cellsToRead = [totalCell];
+        let targetCatInfo = null;
+        if (!isEmpty(categoryFilter)) {
+          const searchName = String(categoryFilter).trim().toLowerCase();
+          targetCatInfo = categories.find(c => c.name.toLowerCase() === searchName);
+          if (targetCatInfo) cellsToRead.push(targetCatInfo.actualCell);
+        } else {
+          categories.forEach(c => cellsToRead.push(c.actualCell));
+        }
+
+        const values = await readSummaryMultipleCells(sheets, summarySheet, cellsToRead);
+        const parseCell = (v) => parseFloat(String(v || '0').replace(/[^0-9.\-]/g, '')) || 0;
+        
+        const totalActual = parseCell(values[totalCell]);
+        
+        if (targetCatInfo) {
+          const actual = parseCell(values[targetCatInfo.actualCell]);
+          shareData.push({
+            month: m,
+            category: targetCatInfo.name,
+            actual,
+            total_actual: totalActual,
+            percentage: totalActual > 0 ? Math.round((actual / totalActual) * 100) : 0
+          });
+        } else {
+          const breakdown = categories.map(c => {
+            const act = parseCell(values[c.actualCell]);
+            return {
+              category: c.name,
+              actual: act,
+              percentage: totalActual > 0 ? Math.round((act / totalActual) * 100) : 0
+            };
+          });
+          shareData.push({
+            month: m,
+            total_actual: totalActual,
+            breakdown
+          });
+        }
+      }
+
+      return res.json({
+        success: true,
+        query_type: 'category_share',
+        type: typeLower,
+        months: targetMonths,
+        share: shareData
+      });
+    }
+
+    // -- top_transactions --
+    if (queryType === 'top_transactions') {
+      const month = unwrap(body.month);
+      const limitRaw = unwrap(body.limit) || unwrap(body.count) || unwrap(body.n);
+      const limit = !isEmpty(limitRaw) ? parseInt(limitRaw, 10) : 5;
+      const typeFilterRaw = unwrap(body.type);
+      const typeLower = isEmpty(typeFilterRaw) ? 'expense' : String(typeFilterRaw).toLowerCase();
+
+      const dateStr = resolveMonthToDate(month);
+      await ensureMonthlySheets(sheets, dateStr);
+      const txSheet = transactionsSheetName(dateStr);
+
+      const sides = typeLower === 'all' ? ['expense', 'income'] : [typeLower];
+      
+      let allRows = [];
+      for (const side of sides) {
+        const rows = await readTransactionRows(sheets, txSheet, side);
+        allRows = allRows.concat(rows);
+      }
+
+      // Sort by amount descending
+      allRows.sort((a, b) => {
+        const amtA = parseFloat(a.amount) || 0;
+        const amtB = parseFloat(b.amount) || 0;
+        return amtB - amtA;
+      });
+
+      const topRows = allRows.slice(0, limit);
+      const transactions = topRows.map(mapTransactionToOutput);
+
+      return res.json({
+        success: true,
+        query_type: 'top_transactions',
+        month: sheetSuffix(dateStr),
+        type: typeLower,
+        limit,
+        transactions
+      });
+    }
+
     return res.status(400).json({ success: false, error: `Unknown query_type: ${queryType}` });
   } catch (error) {
     console.error('Report error:', error);
