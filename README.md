@@ -222,7 +222,7 @@ You may also configure a custom domain on Vercel if desired.
 
 ### 5.4 Workflow Configuration
 
-![Workflow Overview](public/assets/revamp/dx.png)
+![Workflow Overview](public/assets/revamp/dx2.png)
 
 #### Chatbot Workflow JSON
 
