@@ -1174,8 +1174,9 @@ Returns the month's financial overview from the Summary sheet.
   "income_actual": 8000000,
   "expenses_planned": 3000000,
   "expenses_actual": 2450000,
-  "end_balance": 10550000,
-  "savings_this_month": 5550000
+    "end_balance": 10550000,
+  "savings_this_month": 5550000,
+  "savings_rate": 0.69375
 }
 ```
 
@@ -1384,62 +1385,130 @@ Checks whether a planned (not-yet-logged) transaction fits within the category's
 }
 ```
 
---- | :--- | :--- | :--- | :--- |
-| `query_type` | String | **Yes** | | Must be `"plan_calculate"`. |
-| `category` | String | **Yes** | | Category to check. |
-| `amount` | Number \| String | **Yes** | | The hypothetical transaction amount. |
-| `type` | String | No | `"expense"` | `"expense"` or `"income"`. |
-| `month` | String | No | Current month | Target month. |
+---
+
+#### Query Type: `trend`
+Returns the total income and expenses over a sequence of months.
+
+**Request Body**:
+| Parameter | Type | Required | Default | Description |
+| :--- | :--- | :--- | :--- | :--- |
+| `query_type` | String | **Yes** | | Must be `"trend"`. |
+| `month` | String | No | Current month | The ending month. |
+| `count` | Number | No | `6` | Number of months to go backwards. |
+| `months` | Array | No | | Optional explicit list of months. |
 
 **Response** (HTTP 200):
 ```json
 {
   "success": true,
-  "query_type": "plan_calculate",
-  "type": "expense",
-  "category": "Food",
-  "amount": 50000,
-  "month": "07/2026",
-  "planned": 500000,
-  "actual_before": 320000,
-  "projected_actual": 370000,
-  "remaining_before": 180000,
-  "remaining_after": 130000,
-  "within_budget": true
-}
-```
-
-> [!NOTE]
-> `within_budget` is `true` if `projected_actual` ≤ `planned`. This endpoint is read-only — no data is written.
-
-**Error — Missing Fields** (HTTP 400):
-```json
-{
-  "success": false,
-  "error_code": "missing_fields",
-  "error": "Missing category or amount for plan_calculate query"
-}
-```
-
-**Error — Invalid Category** (HTTP 400):
-```json
-{
-  "success": false,
-  "error_code": "invalid_category",
-  "error": "Invalid category. (Validation error)"
-}
-```
-
-**Error — Invalid Amount** (HTTP 400):
-```json
-{
-  "success": false,
-  "error_code": "invalid_amount",
-  "error": "Invalid amount"
+  "query_type": "trend",
+  "months": ["05/2026", "06/2026", "07/2026"],
+  "trend": [
+    {
+      "month": "05/2026",
+      "income_actual": 8000000,
+      "expenses_actual": 2000000
+    },
+    {
+      "month": "06/2026",
+      "income_actual": 8000000,
+      "expenses_actual": 3120000
+    },
+    {
+      "month": "07/2026",
+      "income_actual": 8000000,
+      "expenses_actual": 2450000
+    }
+  ]
 }
 ```
 
 ---
+
+#### Query Type: `category_share`
+Shows the percentage breakdown of spending over multiple months, either for all categories or filtered by one.
+
+**Request Body**:
+| Parameter | Type | Required | Default | Description |
+| :--- | :--- | :--- | :--- | :--- |
+| `query_type` | String | **Yes** | | Must be `"category_share"`. |
+| `month` | String | No | Current month | The ending month. |
+| `count` | Number | No | `6` | Number of months to go backwards. |
+| `months` | Array | No | | Optional explicit list of months. |
+| `type` | String | No | `"expense"` | `"expense"` or `"income"`. |
+| `category` | String | No | | Filter by a specific category. |
+
+**Response** (HTTP 200):
+```json
+{
+  "success": true,
+  "query_type": "category_share",
+  "type": "expense",
+  "months": ["06/2026", "07/2026"],
+  "share": [
+    {
+      "month": "06/2026",
+      "category": "Food",
+      "actual": 300000,
+      "total_actual": 3120000,
+      "percentage": 10
+    },
+    {
+      "month": "07/2026",
+      "category": "Food",
+      "actual": 320000,
+      "total_actual": 2450000,
+      "percentage": 13
+    }
+  ]
+}
+```
+
+---
+
+#### Query Type: `top_transactions`
+Fetches the largest transactions for a given month.
+
+**Request Body**:
+| Parameter | Type | Required | Default | Description |
+| :--- | :--- | :--- | :--- | :--- |
+| `query_type` | String | **Yes** | | Must be `"top_transactions"`. |
+| `month` | String | No | Current month | Target month. |
+| `type` | String | No | `"expense"` | `"expense"`, `"income"`, or `"all"`. |
+| `limit` | Number | No | `5` | Maximum number of transactions to return. |
+
+**Response** (HTTP 200):
+```json
+{
+  "success": true,
+  "query_type": "top_transactions",
+  "month": "07/2026",
+  "type": "expense",
+  "limit": 2,
+  "transactions": [
+    {
+      "row_index": 7,
+      "date": "2026-07-20",
+      "amount": 50000,
+      "description": "Groceries",
+      "category": "Food",
+      "type": "expense"
+    },
+    {
+      "row_index": 6,
+      "date": "2026-07-18",
+      "amount": 30000,
+      "description": "Grab ride",
+      "category": "Transportation",
+      "type": "expense"
+    }
+  ]
+}
+```
+
+---
+
 
 #### Report — General Errors
 
@@ -1447,7 +1516,7 @@ Checks whether a planned (not-yet-logged) transaction fits within the category's
 ```json
 {
   "success": false,
-  "error": "Missing or invalid query_type. Must be one of: balance, budget_remaining, breakdown, period_comparison, plan_calculate"
+  "error": "Missing or invalid query_type. Must be one of: balance, budget_remaining, breakdown, period_comparison, plan_calculate, trend, category_share, top_transactions"
 }
 ```
 
