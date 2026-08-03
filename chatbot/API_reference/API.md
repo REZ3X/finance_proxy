@@ -193,6 +193,39 @@ Returned when `starting_balance` is provided.
 
 ---
 
+### 2.5. Current Balance
+Fetches the current real-time balance for the active calendar month. This endpoint ignores any passed dates and is fixed to the server's current month. It calculates the total from the active Summary sheet (`Starting Balance + Income Actual Total - Expenses Actual Total`).
+
+* **HTTP Method**: `GET` (or `POST`)
+* **Path**: `/current-balance`
+* **Headers**: `None`
+* **Request Body**: `None` (ignores all parameters)
+
+#### Responses
+
+##### Case 1: Success (HTTP 200)
+```json
+{
+  "success": true,
+  "query_type": "current_balance",
+  "month": "08/2026",
+  "starting_balance": 5000000,
+  "income_actual": 2000000,
+  "expenses_actual": 1500000,
+  "current_balance": 5500000
+}
+```
+
+##### Case 2: Google API or Runtime Error (HTTP 500)
+```json
+{
+  "success": false,
+  "error": "Detailed error message"
+}
+```
+
+---
+
 ### 3. Create Transaction
 Adds a new expense or income entry to the appropriate side of the `Transactions MM/YYYY` sheet.
 
@@ -276,7 +309,10 @@ Adds a new expense or income entry to the appropriate side of the `Transactions 
 
 ---
 
-### 4. Edit Transaction (By Row Reference)
+### 4. Edit Transaction (By Row Reference) [COMMENTED OUT]
+
+> [!WARNING]
+> This endpoint has been commented out in the codebase. It is recommended to use `5. Search & Edit Transaction` instead.
 Updates an existing transaction using its `row_index`, `type`, and `month` — values typically obtained from a prior `list-transactions` or `search-edit-transaction` response.
 
 * **HTTP Method**: `POST`
@@ -520,7 +556,10 @@ No changes are applied. Returns the candidate transactions for disambiguation.
 
 ---
 
-### 6. Delete Transaction (By Row Reference)
+### 6. Delete Transaction (By Row Reference) [COMMENTED OUT]
+
+> [!WARNING]
+> This endpoint has been commented out in the codebase. It is recommended to use `7. Search & Delete Transaction` instead.
 Deletes (clears) a specific transaction row using its `row_index`, `type`, and `month`.
 
 * **HTTP Method**: `POST`
@@ -950,7 +989,10 @@ No changes are applied. Returns the candidate categories.
 
 ---
 
-### 12. Delete Planned
+### 12. Delete Planned [COMMENTED OUT]
+
+> [!WARNING]
+> This endpoint has been commented out in the codebase. It is recommended to use `13. Search & Delete Planned` instead.
 Clears the planned amount for a specific category (sets the cell value to `0`).
 
 * **HTTP Method**: `POST`
