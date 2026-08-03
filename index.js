@@ -303,12 +303,25 @@ async function ensureCategoryExists(sheets, summarySheet, summarySheetId, catego
 
 // --- Sheet CRUD ---
 
+const metadataCache = {
+  data: null,
+  timestamp: 0,
+  TTL: 60000 // 60 seconds
+};
+
 async function listAllSheets(sheets) {
+  const now = Date.now();
+  if (metadataCache.data && now - metadataCache.timestamp < metadataCache.TTL) {
+    return metadataCache.data;
+  }
   const meta = await sheets.spreadsheets.get({ spreadsheetId: SPREADSHEET_ID });
-  return meta.data.sheets.map((s) => ({
+  const data = meta.data.sheets.map((s) => ({
     title: s.properties.title,
     sheetId: s.properties.sheetId,
   }));
+  metadataCache.data = data;
+  metadataCache.timestamp = now;
+  return data;
 }
 
 async function getSheetGid(sheets, sheetName) {
@@ -361,6 +374,8 @@ async function cloneSheet(sheets, sourceTitle, newTitle, fixRefFrom = null, fixR
     spreadsheetId: SPREADSHEET_ID,
     requestBody: { requests },
   });
+
+  metadataCache.timestamp = 0; // invalidate cache
 
   return newSheetId;
 }
@@ -1830,21 +1845,40 @@ app.post('/api/finance/report', async (req, res) => {
       const monthInput = unwrap(body.month);
       const targetMonths = getMonthsList(body.months, body.count, monthInput);
 
-      const trendData = [];
+      const sheetNames = [];
       for (const m of targetMonths) {
         const dStr = resolveMonthToDate(m);
         const { summarySheet } = await ensureMonthlySheets(sheets, dStr);
-        
-        const cellValues = await readSummaryMultipleCells(sheets, summarySheet, [
-          SUMMARY_CELLS.expensesActualTotal,
-          SUMMARY_CELLS.incomeActualTotal,
-        ]);
-        const parseCell = (v) => parseFloat(String(v || '0').replace(/[^0-9.\-]/g, '')) || 0;
-        
+        sheetNames.push({ month: m, summarySheet });
+      }
+
+      const rangesToRead = [];
+      sheetNames.forEach(item => {
+        rangesToRead.push(`'${item.summarySheet}'!${SUMMARY_CELLS.expensesActualTotal}`);
+        rangesToRead.push(`'${item.summarySheet}'!${SUMMARY_CELLS.incomeActualTotal}`);
+      });
+
+      let allValues = [];
+      if (rangesToRead.length > 0) {
+        const res = await sheets.spreadsheets.values.batchGet({
+          spreadsheetId: SPREADSHEET_ID,
+          ranges: rangesToRead,
+          valueRenderOption: 'UNFORMATTED_VALUE',
+        });
+        allValues = res.data.valueRanges || [];
+      }
+
+      const parseCell = (vr) => {
+        if (!vr || !vr.values || vr.values.length === 0 || vr.values[0].length === 0) return 0;
+        return parseFloat(String(vr.values[0][0] || '0').replace(/[^0-9.\-]/g, '')) || 0;
+      };
+
+      const trendData = [];
+      for (let i = 0; i < sheetNames.length; i++) {
         trendData.push({
-          month: m,
-          income_actual: parseCell(cellValues[SUMMARY_CELLS.incomeActualTotal]),
-          expenses_actual: parseCell(cellValues[SUMMARY_CELLS.expensesActualTotal]),
+          month: sheetNames[i].month,
+          expenses_actual: parseCell(allValues[i * 2]),
+          income_actual: parseCell(allValues[i * 2 + 1]),
         });
       }
 
@@ -1865,43 +1899,103 @@ app.post('/api/finance/report', async (req, res) => {
       
       const targetMonths = getMonthsList(body.months, body.count, monthInput);
 
-      const shareData = [];
+      const monthData = [];
       for (const m of targetMonths) {
         const dStr = resolveMonthToDate(m);
         const { summarySheet } = await ensureMonthlySheets(sheets, dStr);
-        
-        const { expenses, income } = await loadCategories(sheets, summarySheet);
-        const categories = (typeLower === 'income' ? income : expenses).filter(c => !c.isEmpty);
-        
+        monthData.push({ month: m, summarySheet });
+      }
+
+      const catRanges = [];
+      monthData.forEach(md => {
+        catRanges.push(`'${md.summarySheet}'!B28:B`, `'${md.summarySheet}'!H28:H`);
+      });
+
+      const parseCat = (name, rowIndex, colOffset) => {
+        const isEmptyStr = isEmpty(name);
+        return {
+          name: isEmptyStr ? '' : String(name),
+          row: rowIndex,
+          plannedCell: `${String.fromCharCode(66 + colOffset + 2)}${rowIndex}`,
+          actualCell: `${String.fromCharCode(66 + colOffset + 3)}${rowIndex}`,
+          diffCell: `${String.fromCharCode(66 + colOffset + 4)}${rowIndex}`,
+          isEmpty: isEmptyStr,
+        };
+      };
+
+      let catRes;
+      if (catRanges.length > 0) {
+        catRes = await sheets.spreadsheets.values.batchGet({
+          spreadsheetId: SPREADSHEET_ID,
+          ranges: catRanges,
+          valueRenderOption: 'UNFORMATTED_VALUE',
+        });
+      }
+
+      let vrIdx = 0;
+      for (const md of monthData) {
+        const expRows = (catRes && catRes.data.valueRanges[vrIdx++].values) || [];
+        const incRows = (catRes && catRes.data.valueRanges[vrIdx++].values) || [];
+
+        let expenses = expRows.map((r, i) => parseCat(r ? r[0] : '', 28 + i, 0));
+        let income = incRows.map((r, i) => parseCat(r ? r[0] : '', 28 + i, 6));
+
+        while (expenses.length > 14 && expenses[expenses.length - 1].isEmpty) expenses.pop();
+        while (income.length > 6 && income[income.length - 1].isEmpty) income.pop();
+
+        md.categories = (typeLower === 'income' ? income : expenses).filter(c => !c.isEmpty);
+      }
+
+      const rangesToRead = [];
+      for (const md of monthData) {
         const totalCell = typeLower === 'income' ? SUMMARY_CELLS.incomeActualTotal : SUMMARY_CELLS.expensesActualTotal;
+        rangesToRead.push(`'${md.summarySheet}'!${totalCell}`);
         
-        const cellsToRead = [totalCell];
-        let targetCatInfo = null;
         if (!isEmpty(categoryFilter)) {
           const searchName = String(categoryFilter).trim().toLowerCase();
-          targetCatInfo = categories.find(c => c.name.toLowerCase() === searchName);
-          if (targetCatInfo) cellsToRead.push(targetCatInfo.actualCell);
+          md.targetCatInfo = md.categories.find(c => c.name.toLowerCase() === searchName);
+          if (md.targetCatInfo) rangesToRead.push(`'${md.summarySheet}'!${md.targetCatInfo.actualCell}`);
         } else {
-          categories.forEach(c => cellsToRead.push(c.actualCell));
+          md.categories.forEach(c => rangesToRead.push(`'${md.summarySheet}'!${c.actualCell}`));
         }
+      }
 
-        const values = await readSummaryMultipleCells(sheets, summarySheet, cellsToRead);
-        const parseCell = (v) => parseFloat(String(v || '0').replace(/[^0-9.\-]/g, '')) || 0;
+      let valueRanges = [];
+      if (rangesToRead.length > 0) {
+        const res = await sheets.spreadsheets.values.batchGet({
+          spreadsheetId: SPREADSHEET_ID,
+          ranges: rangesToRead,
+          valueRenderOption: 'UNFORMATTED_VALUE',
+        });
+        valueRanges = res.data.valueRanges || [];
+      }
+
+      const parseCellVR = (vr) => {
+        if (!vr || !vr.values || vr.values.length === 0 || vr.values[0].length === 0) return 0;
+        return parseFloat(String(vr.values[0][0] || '0').replace(/[^0-9.\-]/g, '')) || 0;
+      };
+
+      let valIdx = 0;
+      const shareData = [];
+      
+      for (const md of monthData) {
+        const totalActual = parseCellVR(valueRanges[valIdx++]);
         
-        const totalActual = parseCell(values[totalCell]);
-        
-        if (targetCatInfo) {
-          const actual = parseCell(values[targetCatInfo.actualCell]);
+        if (!isEmpty(categoryFilter)) {
+          let actual = 0;
+          if (md.targetCatInfo) {
+            actual = parseCellVR(valueRanges[valIdx++]);
+          }
           shareData.push({
-            month: m,
-            category: targetCatInfo.name,
+            month: md.month,
+            category: md.targetCatInfo ? md.targetCatInfo.name : String(categoryFilter),
             actual,
             total_actual: totalActual,
             percentage: totalActual > 0 ? Math.round((actual / totalActual) * 100) : 0
           });
         } else {
-          const breakdown = categories.map(c => {
-            const act = parseCell(values[c.actualCell]);
+          const breakdown = md.categories.map(c => {
+            const act = parseCellVR(valueRanges[valIdx++]);
             return {
               category: c.name,
               actual: act,
@@ -1909,7 +2003,7 @@ app.post('/api/finance/report', async (req, res) => {
             };
           });
           shareData.push({
-            month: m,
+            month: md.month,
             total_actual: totalActual,
             breakdown
           });
