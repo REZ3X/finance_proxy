@@ -763,7 +763,7 @@ app.post('/api/finance/create-transaction', async (req, res) => {
 
 // --- Edit Transaction (by row_index) ---
 
-app.post('/api/finance/edit-transaction', async (req, res) => {
+/* app.post('/api/finance/edit-transaction', async (req, res) => {
   try {
     const rowIndexRaw = unwrap(req.body.row_index);
     const type = unwrap(req.body.type);
@@ -846,7 +846,7 @@ app.post('/api/finance/edit-transaction', async (req, res) => {
     console.error('Edit transaction error:', error);
     return res.status(500).json({ success: false, error_code: 'server_error', error: error.message });
   }
-});
+}); */
 
 // --- Search Edit Transaction (content-based match + apply changes) ---
 
@@ -1012,7 +1012,7 @@ app.post('/api/finance/search-edit-transaction', async (req, res) => {
 
 // --- Delete Transaction (by row_index) ---
 
-app.post('/api/finance/delete-transaction', async (req, res) => {
+/* app.post('/api/finance/delete-transaction', async (req, res) => {
   try {
     const rowIndexRaw = unwrap(req.body.row_index);
     const type = unwrap(req.body.type);
@@ -1056,7 +1056,7 @@ app.post('/api/finance/delete-transaction', async (req, res) => {
     console.error('Delete transaction error:', error);
     return res.status(500).json({ success: false, error: error.message });
   }
-});
+}); */
 
 // --- Search Delete Transaction (content-based match + delete) ---
 
@@ -1380,7 +1380,7 @@ async function executePlannedDeletion(sheets, summarySheet, catInfo) {
 
 // --- Delete Planned (clear planned amount) ---
 
-app.post('/api/finance/delete-planned', async (req, res) => {
+/* app.post('/api/finance/delete-planned', async (req, res) => {
   try {
     const month = unwrap(req.body.month);
     const category = unwrap(req.body.category);
@@ -1413,7 +1413,7 @@ app.post('/api/finance/delete-planned', async (req, res) => {
     console.error('Delete planned error:', error);
     return res.status(500).json({ success: false, error: error.message });
   }
-});
+}); */
 
 // --- Search Delete Planned ---
 
