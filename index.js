@@ -1366,7 +1366,15 @@ async function executePlannedDeletion(sheets, summarySheet, catInfo) {
       }
     });
   } else {
-    await executePlannedDeletion(sheets, summarySheet, catInfo);
+    await sheets.spreadsheets.values.batchUpdate({
+      spreadsheetId: SPREADSHEET_ID,
+      requestBody: {
+        valueInputOption: 'USER_ENTERED',
+        data: [
+          { range: `'${summarySheet}'!${catInfo.plannedCell}`, values: [[0]] }
+        ]
+      }
+    });
   }
 }
 
