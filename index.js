@@ -610,6 +610,41 @@ function matchesBudget(categoryEntry, criteria) {
 
 // --- Balance Routes ---
 
+app.all('/api/finance/current-balance', async (req, res) => {
+  try {
+    const dateStr = new Date().toISOString().slice(0, 10); // fixed to current month
+    const sheets = getSheetsClient();
+    const { summarySheet } = await ensureMonthlySheets(sheets, dateStr);
+
+    const cellValues = await readSummaryMultipleCells(sheets, summarySheet, [
+      SUMMARY_CELLS.startBalance,
+      SUMMARY_CELLS.expensesActualTotal,
+      SUMMARY_CELLS.incomeActualTotal,
+    ]);
+
+    const parseCell = (v) => parseFloat(String(v || '0').replace(/[^0-9.\-]/g, '')) || 0;
+
+    const startBalance = parseCell(cellValues[SUMMARY_CELLS.startBalance]);
+    const incomeActual = parseCell(cellValues[SUMMARY_CELLS.incomeActualTotal]);
+    const expenseActual = parseCell(cellValues[SUMMARY_CELLS.expensesActualTotal]);
+
+    const currentBalance = startBalance + incomeActual - expenseActual;
+
+    return res.json({
+      success: true,
+      query_type: 'current_balance',
+      month: sheetSuffix(dateStr),
+      starting_balance: startBalance,
+      income_actual: incomeActual,
+      expenses_actual: expenseActual,
+      current_balance: currentBalance,
+    });
+  } catch (error) {
+    console.error('Current Balance error:', error);
+    return res.status(500).json({ success: false, error: error.message });
+  }
+});
+
 
 app.get('/api/finance/balance', async (req, res) => {
   try {
